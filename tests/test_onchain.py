@@ -1,10 +1,17 @@
+from unittest.mock import MagicMock
+
+import pytest
+from requests.exceptions import HTTPError
+
 from robinhood_sniper.providers.onchain import (
     KNOWN_BASE_TOKENS,
     UNISWAP_V3_FACTORY,
     UNISWAP_V4_POOL_MANAGER,
+    RobinhoodChainFactoryProvider,
     is_buy_swap,
     pick_new_token,
 )
+from robinhood_sniper.providers.history import TokenHistoryStore
 
 WETH = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "WETH")
 USDG = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "USDG")
@@ -49,3 +56,29 @@ def test_v3_and_v4_addresses_are_distinct_and_checksummed():
 
     assert Web3.is_checksum_address(UNISWAP_V3_FACTORY)
     assert Web3.is_checksum_address(UNISWAP_V4_POOL_MANAGER)
+
+
+def test_creation_log_fetch_falls_back_to_empty_on_persistent_rate_limit(tmp_path, monkeypatch):
+    """Losing one version's discovery to a sustained 429 shouldn't crash the
+    whole scan -- it should degrade to 'found nothing this version' so the
+    other version's pools (and this run overall) still come back."""
+    monkeypatch.setattr("robinhood_sniper.providers.onchain.time.sleep", lambda seconds: None)
+    provider = RobinhoodChainFactoryProvider(
+        w3=MagicMock(), history=TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    )
+    response = MagicMock(status_code=429)
+    always_rate_limited = MagicMock(side_effect=HTTPError(response=response))
+
+    result = provider._fetch_creation_logs_or_empty("v4", always_rate_limited)
+
+    assert result == []
+
+
+def test_creation_log_fetch_propagates_non_rate_limit_errors(tmp_path):
+    provider = RobinhoodChainFactoryProvider(
+        w3=MagicMock(), history=TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    )
+    always_broken = MagicMock(side_effect=ValueError("not an HTTP error at all"))
+
+    with pytest.raises(ValueError):
+        provider._fetch_creation_logs_or_empty("v3", always_broken)

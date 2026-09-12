@@ -39,6 +39,7 @@ TokenSnapshot before scoring.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -46,6 +47,8 @@ from typing import Any, Callable, TypeVar
 
 from requests.exceptions import HTTPError
 from web3 import Web3
+
+logger = logging.getLogger(__name__)
 
 from ..config import SniperConfig
 from ..models import DeployerInfo, LiquidityInfo, PricePoint, TokenSnapshot
@@ -367,17 +370,30 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         )
         return snapshot
 
+    def _fetch_creation_logs_or_empty(self, label: str, fn: Callable[[], list[Any]]) -> list[Any]:
+        """Losing one version's discovery entirely (crashing the whole scan)
+        is worse than losing one token's history, so these two top-level
+        queries get a longer retry budget than per-token RPC calls, and a
+        hard fallback to "found nothing this version" instead of raising --
+        the other version's pools (and this scan's DexScreener-only results)
+        still get returned rather than nothing at all."""
+        try:
+            return _with_retry(fn, retries=4, base_delay=2.0)
+        except HTTPError:
+            logger.warning("%s pool discovery failed (RPC rate limited) -- skipping this scan", label)
+            return []
+
     def fetch_new_pairs(self, config: SniperConfig) -> list[TokenSnapshot]:
         block_time = self._estimate_block_time_seconds()
         latest = _with_retry(lambda: self.w3.eth.block_number)
         blocks_back = int((config.age_max_minutes * 60) / block_time) + 10
         from_block = max(latest - blocks_back, 0)
 
-        v3_logs = _with_retry(
-            lambda: self.factory.events.PoolCreated().get_logs(from_block=from_block, to_block=latest)
+        v3_logs = self._fetch_creation_logs_or_empty(
+            "v3", lambda: self.factory.events.PoolCreated().get_logs(from_block=from_block, to_block=latest)
         )
-        v4_logs = _with_retry(
-            lambda: self.pool_manager_v4.events.Initialize().get_logs(from_block=from_block, to_block=latest)
+        v4_logs = self._fetch_creation_logs_or_empty(
+            "v4", lambda: self.pool_manager_v4.events.Initialize().get_logs(from_block=from_block, to_block=latest)
         )
 
         # Newest first: if a launch wave means the scan can't cover everything
