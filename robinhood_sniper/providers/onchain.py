@@ -70,12 +70,17 @@ HISTORY_AUGMENT_BUDGET_SECONDS = 30  # cap total time spent on swap-history RPC 
 IDENTIFY_ENRICH_WORKERS = 20
 IDENTIFY_ENRICH_BUDGET_SECONDS = 90
 
-# A launch bundle is multiple distinct wallets buying in the pool's very
-# first block -- before public/organic trading could plausibly react to
-# the launch. A handful (the deployer's own first buy, maybe one sniper
-# bot) is normal; several distinct wallets in that exact block is the
-# signature of coordinated, same-block buying set up in advance.
-BUNDLE_MIN_SAME_BLOCK_BUYERS = 3
+# A launch bundle is multiple distinct wallets buying within the pool's
+# very first few blocks -- before public/organic trading could plausibly
+# react to the launch. Robinhood Chain's block time is ~0.1s, so "the
+# exact creation block" is too tight a window to be a realistic bundling
+# signature (independent organic buyers rarely land within 100ms of each
+# other, but so do genuinely bundled ones landing one or two blocks
+# later); a handful of blocks (still well under a second) is a better
+# match for "before the market could react" while still excluding
+# ordinary early trading spread over the first several seconds.
+BUNDLE_WINDOW_BLOCKS = 3
+BUNDLE_MIN_EARLY_BUYERS = 3
 
 T = TypeVar("T")
 
@@ -272,13 +277,15 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
     def _extract_buy_wallets(
         self, logs: list[Any], new_token_is_token0: bool, creation_block: int
     ) -> tuple[set[str], set[str]]:
-        """Returns (all buy wallets, buy wallets whose swap was in the pool's
-        creation block). The second set is naturally empty on every call
-        after the first, since `from_block` moves past `creation_block`
-        once a pool has been scanned once -- no separate "only check once"
-        bookkeeping needed here, just at the point where it's persisted."""
+        """Returns (all buy wallets, buy wallets whose swap landed within
+        BUNDLE_WINDOW_BLOCKS of the pool's creation block). The second set
+        is naturally empty on every call after the first, since `from_block`
+        moves past the window once a pool has been scanned once -- no
+        separate "only check once" bookkeeping needed here, just at the
+        point where it's persisted."""
         wallets: set[str] = set()
-        same_block_wallets: set[str] = set()
+        early_wallets: set[str] = set()
+        bundle_window_end = creation_block + BUNDLE_WINDOW_BLOCKS - 1
         for log in logs[:MAX_SWAP_LOGS_PER_POOL]:
             if not is_buy_swap(log["args"]["amount0"], log["args"]["amount1"], new_token_is_token0):
                 continue
@@ -287,12 +294,12 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
                 # the transaction's actual sender is the real trading wallet.
                 tx = _with_retry(lambda log=log: self.w3.eth.get_transaction(log["transactionHash"]))
                 wallets.add(tx["from"])
-                if log["blockNumber"] == creation_block:
-                    same_block_wallets.add(tx["from"])
+                if creation_block <= log["blockNumber"] <= bundle_window_end:
+                    early_wallets.add(tx["from"])
             except Exception:
                 continue
             time.sleep(SWAP_TX_LOOKUP_DELAY_SECONDS)
-        return wallets, same_block_wallets
+        return wallets, early_wallets
 
     def _fetch_new_buy_wallets_v3(
         self, pool_address: str, new_token_is_token0: bool, creation_block: int, from_block: int, to_block: int
@@ -349,15 +356,13 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         live_price = snapshot.price_history[-1].price_usd if snapshot.price_history else None
 
         if do_rpc_update:
-            new_wallets, same_block_wallets = fetch_wallets(from_block, latest_block)
+            new_wallets, early_wallets = fetch_wallets(from_block, latest_block)
             with self._history_lock:
                 self.history.record_buyers(history_key, new_wallets, latest_block)
                 if live_price is not None:
                     self.history.record_price(history_key, live_price)
                 if not bundle_already_checked:
-                    self.history.record_bundle_check(
-                        history_key, len(same_block_wallets), BUNDLE_MIN_SAME_BLOCK_BUYERS
-                    )
+                    self.history.record_bundle_check(history_key, len(early_wallets), BUNDLE_MIN_EARLY_BUYERS)
 
         with self._history_lock:
             entry = self.history.get(history_key)
