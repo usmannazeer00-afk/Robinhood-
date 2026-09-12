@@ -1,7 +1,14 @@
-from robinhood_sniper.providers.onchain import KNOWN_BASE_TOKENS, is_buy_swap, pick_new_token
+from robinhood_sniper.providers.onchain import (
+    KNOWN_BASE_TOKENS,
+    UNISWAP_V3_FACTORY,
+    UNISWAP_V4_POOL_MANAGER,
+    is_buy_swap,
+    pick_new_token,
+)
 
 WETH = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "WETH")
 USDG = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "USDG")
+NATIVE_ETH = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "ETH")
 RANDOM_A = "0x1111111111111111111111111111111111111111"
 RANDOM_B = "0x2222222222222222222222222222222222222222"
 
@@ -29,3 +36,16 @@ def test_is_buy_swap_when_new_token_is_token0():
 def test_is_buy_swap_when_new_token_is_token1():
     assert is_buy_swap(amount0=200, amount1=-500, new_token_is_token0=False) is True
     assert is_buy_swap(amount0=-200, amount1=500, new_token_is_token0=False) is False
+
+
+def test_v4_native_eth_pairing_is_recognized_as_a_base_token():
+    # v4 represents native ETH as the zero address, not WETH
+    assert pick_new_token(NATIVE_ETH, RANDOM_A) == RANDOM_A
+
+
+def test_v3_and_v4_addresses_are_distinct_and_checksummed():
+    assert UNISWAP_V3_FACTORY != UNISWAP_V4_POOL_MANAGER
+    from web3 import Web3
+
+    assert Web3.is_checksum_address(UNISWAP_V3_FACTORY)
+    assert Web3.is_checksum_address(UNISWAP_V4_POOL_MANAGER)
