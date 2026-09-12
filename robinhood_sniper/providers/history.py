@@ -37,6 +37,9 @@ def _empty_entry() -> dict[str, Any]:
         "price_points": [],  # [[iso_timestamp, price_usd], ...]
         "buyer_wallets": [],  # cumulative distinct wallet addresses (lowercase)
         "buyer_series": [],  # [[iso_timestamp, cumulative_unique_count], ...]
+        "bundle_checked": False,  # whether the creation-block bundle check has run (runs once)
+        "bundle_same_block_buyer_count": 0,
+        "bundle_detected": False,
     }
 
 
@@ -77,6 +80,16 @@ class TokenHistoryStore:
         entry["buyer_wallets"] = sorted(known)
         entry["buyer_series"].append([datetime.now(timezone.utc).isoformat(), len(known)])
         entry["last_scanned_block"] = last_block
+
+    def record_bundle_check(self, pool_address: str, same_block_buyer_count: int, threshold: int) -> None:
+        """Records the one-time creation-block bundle check. Only meaningful
+        the first time a pool's swap history is fetched (from_block ==
+        pool_created_block) -- called again on a pool already checked is a
+        harmless no-op re-write of the same values."""
+        entry = self.get(pool_address)
+        entry["bundle_checked"] = True
+        entry["bundle_same_block_buyer_count"] = same_block_buyer_count
+        entry["bundle_detected"] = same_block_buyer_count >= threshold
 
     def price_series(self, pool_address: str) -> list[tuple[datetime, float]]:
         entry = self.get(pool_address)

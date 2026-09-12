@@ -53,6 +53,21 @@ def test_corrupt_file_loads_as_empty(tmp_path):
     assert store.price_series("0xPool") == []
 
 
+def test_bundle_check_flags_when_same_block_buyers_meet_threshold(tmp_path):
+    store = TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    store.record_bundle_check("0xPool", same_block_buyer_count=5, threshold=3)
+    entry = store.get("0xPool")
+    assert entry["bundle_checked"] is True
+    assert entry["bundle_detected"] is True
+    assert entry["bundle_same_block_buyer_count"] == 5
+
+
+def test_bundle_check_does_not_flag_below_threshold(tmp_path):
+    store = TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    store.record_bundle_check("0xPool", same_block_buyer_count=1, threshold=3)
+    assert store.get("0xPool")["bundle_detected"] is False
+
+
 def test_get_backfills_entries_from_an_older_schema(tmp_path):
     path = tmp_path / "hist.json"
     old_schema_entry = {

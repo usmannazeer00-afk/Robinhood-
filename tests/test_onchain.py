@@ -12,6 +12,8 @@ from robinhood_sniper.providers.onchain import (
     pick_new_token,
 )
 from robinhood_sniper.providers.history import TokenHistoryStore
+from robinhood_sniper.models import DeployerInfo, LiquidityInfo, TokenSnapshot
+from datetime import datetime, timezone
 
 WETH = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "WETH")
 USDG = next(addr for addr, sym in KNOWN_BASE_TOKENS.items() if sym == "USDG")
@@ -82,3 +84,65 @@ def test_creation_log_fetch_propagates_non_rate_limit_errors(tmp_path):
 
     with pytest.raises(ValueError):
         provider._fetch_creation_logs_or_empty("v3", always_broken)
+
+
+def _blank_snapshot() -> TokenSnapshot:
+    return TokenSnapshot(
+        chain="robinhood", pair_address="0xpool", token_address="0xtoken",
+        symbol="TEST", name="Test", created_at=datetime.now(timezone.utc),
+        market_cap_usd=0.0, liquidity=LiquidityInfo(usd=0.0), deployer=DeployerInfo(),
+    )
+
+
+def test_augment_with_history_flags_a_detected_bundle(tmp_path):
+    """End-to-end: a fetch_wallets callback reporting enough same-block
+    buyers should result in the snapshot's deployer flag being set, which
+    is what actually drives the hard filter in scoring.py."""
+    provider = RobinhoodChainFactoryProvider(
+        w3=MagicMock(), history=TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    )
+    snapshot = _blank_snapshot()
+    bundle_wallets = {"0xA", "0xB", "0xC"}  # meets BUNDLE_MIN_SAME_BLOCK_BUYERS (3)
+    fetch_wallets = MagicMock(return_value=(bundle_wallets, bundle_wallets))
+
+    provider._augment_with_history(
+        snapshot, "0xpool", fetch_wallets, pool_created_block=100, latest_block=100, do_rpc_update=True
+    )
+
+    assert snapshot.deployer.linked_to_launch_bundles is True
+
+
+def test_augment_with_history_does_not_flag_a_clean_launch(tmp_path):
+    provider = RobinhoodChainFactoryProvider(
+        w3=MagicMock(), history=TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    )
+    snapshot = _blank_snapshot()
+    fetch_wallets = MagicMock(return_value=({"0xA"}, {"0xA"}))  # only the deployer's own first buy
+
+    provider._augment_with_history(
+        snapshot, "0xpool", fetch_wallets, pool_created_block=100, latest_block=100, do_rpc_update=True
+    )
+
+    assert snapshot.deployer.linked_to_launch_bundles is False
+
+
+def test_bundle_flag_is_not_reset_by_a_later_scan_with_no_new_creation_block_data(tmp_path):
+    """Once bundling is detected on the first pass, a later scan's
+    fetch_wallets naturally returns an empty same-block set (from_block
+    has moved past the creation block by then) -- that must not wipe out
+    the earlier finding."""
+    history = TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    provider = RobinhoodChainFactoryProvider(w3=MagicMock(), history=history)
+    snapshot = _blank_snapshot()
+
+    first_pass = MagicMock(return_value=({"0xA", "0xB", "0xC"}, {"0xA", "0xB", "0xC"}))
+    provider._augment_with_history(
+        snapshot, "0xpool", first_pass, pool_created_block=100, latest_block=100, do_rpc_update=True
+    )
+    assert snapshot.deployer.linked_to_launch_bundles is True
+
+    later_pass = MagicMock(return_value=({"0xD"}, set()))  # no creation-block data this time
+    provider._augment_with_history(
+        snapshot, "0xpool", later_pass, pool_created_block=100, latest_block=200, do_rpc_update=True
+    )
+    assert snapshot.deployer.linked_to_launch_bundles is True
