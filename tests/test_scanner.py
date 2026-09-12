@@ -23,6 +23,13 @@ def test_format_scan_results_contains_symbols():
     assert "New robinhood pairs" in text
 
 
+def test_format_scan_results_includes_contract_address():
+    results = scan(MockProvider(), DEFAULT_CONFIG)
+    text = format_scan_results(results, DEFAULT_CONFIG.chain, markdown=False)
+    strong = next(r for r in results if r.token.symbol == "SNIPE")
+    assert f"Contract: {strong.token.token_address}" in text
+
+
 def test_format_scan_results_handles_empty():
     text = format_scan_results([], "robinhood", markdown=False)
     assert "No new robinhood pairs" in text

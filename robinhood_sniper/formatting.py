@@ -19,6 +19,7 @@ def format_token_block(item: ScannedToken, markdown: bool = True) -> str:
     if not r.passed_hard_filters:
         lines.append(f"{bold}🔴 {t.symbol} ({t.name}){bold} — HARD FILTER FAILED")
         lines.append(f"Reason: {r.hard_filter_failed}")
+        lines.append(f"Contract: `{t.token_address}`" if markdown else f"Contract: {t.token_address}")
         lines.append(f"Pair: `{t.pair_address}`" if markdown else f"Pair: {t.pair_address}")
         return "\n".join(lines)
 
@@ -31,6 +32,8 @@ def format_token_block(item: ScannedToken, markdown: bool = True) -> str:
         check = "✅" if f.points >= f.max_points else ("➖" if f.points > 0 else "❌")
         lines.append(f"{check} {f.name}: {f.points:.1f}/{f.max_points} — {f.note}")
     lines.append("")
+    lines.append(f"Name: {t.symbol} — {t.name}")
+    lines.append(f"Contract: `{t.token_address}`" if markdown else f"Contract: {t.token_address}")
     lines.append(f"Pair: `{t.pair_address}`" if markdown else f"Pair: {t.pair_address}")
     lines.append(t.dexscreener_url)
 
