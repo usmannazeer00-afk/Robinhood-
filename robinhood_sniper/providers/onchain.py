@@ -56,6 +56,7 @@ from .history import TokenHistoryStore
 MAX_SWAP_LOGS_PER_POOL = 500  # cap RPC calls (one eth_getTransaction per swap) per scan
 SWAP_TX_LOOKUP_DELAY_SECONDS = 0.1  # throttle to avoid bursting the public RPC's rate limit
 HISTORY_AUGMENT_BUDGET_SECONDS = 30  # cap total time spent on swap-history RPC calls per scan
+SCAN_TIME_BUDGET_SECONDS = 75  # hard cap on the whole scan; watching v3+v4 means unbounded candidate counts
 
 T = TypeVar("T")
 
@@ -317,6 +318,55 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             deployer=DeployerInfo(),
         )
 
+    def _process_v3_log(
+        self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime], latest: int, history_deadline: float
+    ) -> TokenSnapshot | None:
+        bn = log["blockNumber"]
+        token0, token1, pool = log["args"]["token0"], log["args"]["token1"], log["args"]["pool"]
+        new_token = pick_new_token(token0, token1)
+        if new_token is None:
+            return None  # both sides already-known base tokens, not a new listing
+
+        snapshot = self._base_snapshot(config, pool, new_token, pool, block_time_of(bn))
+        if self.dexscreener is not None:
+            snapshot = self.dexscreener.enrich_by_token(snapshot)
+
+        new_token_is_token0 = new_token.lower() == token0.lower()
+        self._augment_with_history(
+            snapshot,
+            pool,
+            lambda fb, tb, p=pool, nt0=new_token_is_token0: self._fetch_new_buy_wallets_v3(p, nt0, fb, tb),
+            bn,
+            latest,
+            do_rpc_update=time.monotonic() < history_deadline,
+        )
+        return snapshot
+
+    def _process_v4_log(
+        self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime], latest: int, history_deadline: float
+    ) -> TokenSnapshot | None:
+        bn = log["blockNumber"]
+        currency0, currency1, pool_id = log["args"]["currency0"], log["args"]["currency1"], log["args"]["id"]
+        new_token = pick_new_token(currency0, currency1)
+        if new_token is None:
+            return None
+
+        pool_id_hex = Web3.to_hex(pool_id)
+        snapshot = self._base_snapshot(config, pool_id_hex, new_token, pool_id_hex, block_time_of(bn))
+        if self.dexscreener is not None:
+            snapshot = self.dexscreener.enrich_by_token(snapshot)
+
+        new_token_is_currency0 = new_token.lower() == currency0.lower()
+        self._augment_with_history(
+            snapshot,
+            pool_id_hex,
+            lambda fb, tb, pid=pool_id, nt0=new_token_is_currency0: self._fetch_new_buy_wallets_v4(pid, nt0, fb, tb),
+            bn,
+            latest,
+            do_rpc_update=time.monotonic() < history_deadline,
+        )
+        return snapshot
+
     def fetch_new_pairs(self, config: SniperConfig) -> list[TokenSnapshot]:
         block_time = self._estimate_block_time_seconds()
         latest = _with_retry(lambda: self.w3.eth.block_number)
@@ -330,6 +380,16 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             lambda: self.pool_manager_v4.events.Initialize().get_logs(from_block=from_block, to_block=latest)
         )
 
+        # Newest first: if a launch wave means the scan can't cover everything
+        # within its time budget, the freshest candidates (the ones actually
+        # worth sniping) get processed before older ones that are about to
+        # age out of the window anyway.
+        tagged_logs = sorted(
+            [("v3", log) for log in v3_logs] + [("v4", log) for log in v4_logs],
+            key=lambda item: item[1]["blockNumber"],
+            reverse=True,
+        )
+
         block_timestamps: dict[int, int] = {}
 
         def block_time_of(block_number: int) -> datetime:
@@ -339,57 +399,15 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
         snapshots: list[TokenSnapshot] = []
         history_deadline = time.monotonic() + HISTORY_AUGMENT_BUDGET_SECONDS
+        scan_deadline = time.monotonic() + SCAN_TIME_BUDGET_SECONDS
 
-        for log in v3_logs:
-            bn = log["blockNumber"]
-            token0, token1, pool = log["args"]["token0"], log["args"]["token1"], log["args"]["pool"]
-            new_token = pick_new_token(token0, token1)
-            if new_token is None:
-                continue  # both sides already-known base tokens, not a new listing
+        for kind, log in tagged_logs:
+            if time.monotonic() >= scan_deadline:
+                break  # remaining (older) candidates are picked up on the next scan
 
-            snapshot = self._base_snapshot(config, pool, new_token, pool, block_time_of(bn))
-            if self.dexscreener is not None:
-                snapshot = self.dexscreener.enrich_by_token(snapshot)
-
-            new_token_is_token0 = new_token.lower() == token0.lower()
-            self._augment_with_history(
-                snapshot,
-                pool,
-                lambda fb, tb, p=pool, nt0=new_token_is_token0: self._fetch_new_buy_wallets_v3(p, nt0, fb, tb),
-                bn,
-                latest,
-                do_rpc_update=time.monotonic() < history_deadline,
-            )
-
-            if snapshot.age_minutes <= config.age_max_minutes:
-                snapshots.append(snapshot)
-
-        for log in v4_logs:
-            bn = log["blockNumber"]
-            currency0, currency1, pool_id = log["args"]["currency0"], log["args"]["currency1"], log["args"]["id"]
-            new_token = pick_new_token(currency0, currency1)
-            if new_token is None:
-                continue
-
-            pool_id_hex = Web3.to_hex(pool_id)
-
-            snapshot = self._base_snapshot(config, pool_id_hex, new_token, pool_id_hex, block_time_of(bn))
-            if self.dexscreener is not None:
-                snapshot = self.dexscreener.enrich_by_token(snapshot)
-
-            new_token_is_currency0 = new_token.lower() == currency0.lower()
-            self._augment_with_history(
-                snapshot,
-                pool_id_hex,
-                lambda fb, tb, pid=pool_id, nt0=new_token_is_currency0: self._fetch_new_buy_wallets_v4(
-                    pid, nt0, fb, tb
-                ),
-                bn,
-                latest,
-                do_rpc_update=time.monotonic() < history_deadline,
-            )
-
-            if snapshot.age_minutes <= config.age_max_minutes:
+            processor = self._process_v3_log if kind == "v3" else self._process_v4_log
+            snapshot = processor(config, log, block_time_of, latest, history_deadline)
+            if snapshot is not None and snapshot.age_minutes <= config.age_max_minutes:
                 snapshots.append(snapshot)
 
         self.history.prune(config.age_max_minutes)
