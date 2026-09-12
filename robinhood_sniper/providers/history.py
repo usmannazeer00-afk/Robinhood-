@@ -32,6 +32,8 @@ def _empty_entry() -> dict[str, Any]:
     return {
         "pool_created_block": None,
         "last_scanned_block": None,
+        "symbol": None,  # cached ERC20 symbol()/name() -- these never change, so fetch once
+        "name": None,
         "price_points": [],  # [[iso_timestamp, price_usd], ...]
         "buyer_wallets": [],  # cumulative distinct wallet addresses (lowercase)
         "buyer_series": [],  # [[iso_timestamp, cumulative_unique_count], ...]
@@ -58,7 +60,10 @@ class TokenHistoryStore:
             pass  # best-effort; a lost write just means one scan's history doesn't persist
 
     def get(self, pool_address: str) -> dict[str, Any]:
-        return self._data.setdefault(pool_address.lower(), _empty_entry())
+        entry = self._data.setdefault(pool_address.lower(), _empty_entry())
+        for key, default in _empty_entry().items():
+            entry.setdefault(key, default)  # backfills entries persisted under an older schema
+        return entry
 
     def record_price(self, pool_address: str, price_usd: float) -> None:
         if price_usd <= 0:

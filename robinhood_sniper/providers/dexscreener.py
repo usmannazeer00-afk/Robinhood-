@@ -27,6 +27,9 @@ from .base import PairDataProvider
 
 DEFAULT_API_BASE = "https://api.dexscreener.com"
 REQUEST_TIMEOUT_SECONDS = 10
+# enrich_by_token runs once per candidate per scan (potentially dozens during
+# a launch wave) -- a short timeout bounds the worst case when the API is slow.
+ENRICH_TIMEOUT_SECONDS = 5
 
 
 class ExplorerEnrichment(Protocol):
@@ -80,7 +83,7 @@ class DexScreenerProvider(PairDataProvider):
         """
         url = f"{self.api_base}/token-pairs/v1/{self.chain_id}/{snapshot.token_address}"
         try:
-            resp = self.session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            resp = self.session.get(url, timeout=ENRICH_TIMEOUT_SECONDS)
             resp.raise_for_status()
             pairs = resp.json() or []
         except (requests.RequestException, ValueError):

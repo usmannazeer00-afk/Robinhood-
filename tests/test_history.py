@@ -51,3 +51,22 @@ def test_corrupt_file_loads_as_empty(tmp_path):
     path.write_text("not json")
     store = TokenHistoryStore(path=str(path))
     assert store.price_series("0xPool") == []
+
+
+def test_get_backfills_entries_from_an_older_schema(tmp_path):
+    path = tmp_path / "hist.json"
+    old_schema_entry = {
+        "0xpool": {
+            "pool_created_block": 1,
+            "last_scanned_block": 1,
+            "price_points": [],
+            "buyer_wallets": [],
+            "buyer_series": [],
+            # no "symbol" / "name" keys -- as persisted before that schema change
+        }
+    }
+    path.write_text(json.dumps(old_schema_entry))
+    store = TokenHistoryStore(path=str(path))
+    entry = store.get("0xPool")
+    assert entry["symbol"] is None
+    assert entry["name"] is None

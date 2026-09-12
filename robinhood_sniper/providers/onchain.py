@@ -247,7 +247,13 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             if new_token is None:
                 continue  # both sides already-known base tokens, not a new listing
 
-            symbol, name = self._lookup_symbol_name(new_token)
+            history_entry = self.history.get(pool)
+            if history_entry["symbol"] is None:
+                symbol, name = self._lookup_symbol_name(new_token)
+                history_entry["symbol"], history_entry["name"] = symbol, name
+            else:
+                symbol, name = history_entry["symbol"], history_entry["name"]
+
             snapshot = TokenSnapshot(
                 chain=config.chain,
                 pair_address=pool,
