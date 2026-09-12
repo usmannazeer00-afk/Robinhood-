@@ -34,35 +34,48 @@ regardless of everything else, matching the spec.
 All thresholds live in `robinhood_sniper/config.py` (`SniperConfig`) if
 you want to retune them.
 
-## Data source — important caveat
+## Data sources
 
-There isn't yet a standard public API for Robinhood Chain DEX data. This
-repo ships:
+Three providers, in increasing order of fidelity:
 
-- **`MockProvider`** — synthetic candidates spanning the full quality
-  range (a clean accelerating setup, a wash-trading look-alike, a
-  rug-flagged deployer, a too-young launch). This is the default, so
-  `/newpair` works out of the box for demoing the scoring logic.
+- **`MockProvider`** (default) — synthetic candidates spanning the full
+  quality range (a clean accelerating setup, a wash-trading look-alike, a
+  rug-flagged deployer, a too-young launch). `/newpair` works out of the
+  box for demoing the scoring logic with this.
+
 - **`DexScreenerProvider`** — a real HTTP client against DexScreener's
-  public search API, filtered by chain id. DexScreener gives market cap,
-  liquidity, and m5/h1 volume/buy-sell counts, which is enough to score
-  age/mcap/liquidity/MC-liquidity-ratio/an approximate volume-acceleration
-  signal. It does **not** give unique-buyer time series, holder
-  distribution, deployer history, or a price-history array — those
-  factors gracefully degrade (partial/neutral score with a note) rather
-  than crash when the data isn't available.
+  public **search** API, filtered by chain id. Only finds pools whose
+  token name/symbol matches the search text (default: `"robinhood"`), so
+  it will **not** catch a freshly launched token with a random name — it's
+  useful for looking up a specific known token, not for chain-wide new-pair
+  discovery. Gives market cap, liquidity, and m5/h1 volume/buy-sell counts.
 
-To get full-fidelity scoring you'll want to pair `DexScreenerProvider`
-with a Robinhood Chain block-explorer API (most Arbitrum-Orbit chains run
-a Blockscout-compatible one) for holder distribution and deployer
-history, and a price-history source for the higher-low check. The
-`ExplorerEnrichment` protocol in `providers/dexscreener.py` is the seam
-to plug that in — implement `.enrich(token) -> token` against whatever
-explorer/indexer Robinhood Chain ends up exposing, and pass it to
-`DexScreenerProvider(enrichment=...)`.
+- **`RobinhoodChainFactoryProvider`** — real on-chain discovery. Watches
+  `UniswapV3Factory.PoolCreated` directly on Robinhood Chain mainnet via
+  JSON-RPC, so it catches every new pool regardless of name, then enriches
+  each one with `DexScreenerProvider.enrich_by_token` for market data.
+  This is the one to use for real sniping.
 
-Set `DEX_CHAIN_ID` / `DEX_SEARCH_QUERY` / `DEX_API_BASE` once you know
-the confirmed chain id DexScreener uses for Robinhood Chain.
+  Verified live and working (2026-09-12) against Robinhood Chain mainnet:
+  chain id `4663`, public RPC `https://rpc.mainnet.chain.robinhood.com`,
+  `UniswapV3Factory` at `0x1f7d7550b1b028f7571e69a784071f0205fd2efa`
+  (bytecode confirmed to match the standard Uniswap v3 factory), with
+  `WETH`/`USDG` as the known base tokens pools are quoted against (per
+  [docs.robinhood.com/chain/contracts](https://docs.robinhood.com/chain/contracts)
+  and [blog.uniswap.org/robinhood-chain-is-live](https://blog.uniswap.org/robinhood-chain-is-live)).
+  A live test run found real new pools in the last 45 minutes — including
+  several identical-named zero-liquidity spam launches, which the scorer
+  correctly zeroed out.
+
+  Set `ROBINHOOD_RPC_URL` to point at a dedicated RPC (Alchemy, etc.)
+  instead of the public rate-limited one for heavier polling.
+
+None of the three give unique-buyer time series, holder distribution, or
+deployer history yet — Robinhood Chain doesn't have a standard block
+explorer API publicly documented as of this writing. Those factors
+gracefully degrade (partial/neutral score with a note) rather than crash
+when the data isn't available. The `ExplorerEnrichment` protocol in
+`providers/dexscreener.py` is the seam to plug one in once available.
 
 ## Setup
 
@@ -85,15 +98,17 @@ python -m robinhood_sniper.bot
 
 Commands:
 - `/newpair` or `/scan` — scan now, return scored candidates (mock data
-  by default; set `DEX_LIVE=true` for the real DexScreener provider)
+  by default; set `SNIPER_SOURCE=onchain` for the real on-chain provider,
+  or `SNIPER_SOURCE=dexscreener` for name-search)
 - `/newpair 80` — only show candidates scoring 80+
 - `/params` — show the active filter thresholds
 
 **CLI** (no Telegram needed, good for testing):
 
 ```bash
-python -m robinhood_sniper.cli scan            # mock data
-python -m robinhood_sniper.cli scan --live     # DexScreener-backed
+python -m robinhood_sniper.cli scan                        # mock data
+python -m robinhood_sniper.cli scan --source onchain        # real PoolCreated watcher (recommended)
+python -m robinhood_sniper.cli scan --source dexscreener    # name-search, limited
 python -m robinhood_sniper.cli scan --min-score 80
 ```
 

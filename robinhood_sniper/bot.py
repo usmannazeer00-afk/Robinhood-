@@ -3,9 +3,11 @@
 Setup:
     1. Create a bot with @BotFather on Telegram, grab the token.
     2. export TELEGRAM_BOT_TOKEN=...
-    3. (optional) export DEX_CHAIN_ID=robinhood DEX_API_BASE=... to point
-       at a real data source; without it the bot serves mock candidates
-       so you can see the output format immediately.
+    3. (optional) export SNIPER_SOURCE=onchain to watch real PoolCreated
+       events on Robinhood Chain (enriched with DexScreener market data),
+       or SNIPER_SOURCE=dexscreener for the name-search provider. Without
+       it the bot serves mock candidates so you can see the output format
+       immediately.
     4. python -m robinhood_sniper.bot
 
 Commands:
@@ -28,6 +30,7 @@ from .formatting import format_scan_results
 from .providers.base import PairDataProvider
 from .providers.dexscreener import DexScreenerProvider
 from .providers.mock import MockProvider
+from .providers.onchain import RobinhoodChainFactoryProvider
 from .scanner import scan
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -37,7 +40,12 @@ TELEGRAM_MESSAGE_LIMIT = 4096
 
 
 def _build_provider() -> PairDataProvider:
-    if os.environ.get("DEX_LIVE", "").lower() in {"1", "true", "yes"}:
+    source = os.environ.get("SNIPER_SOURCE", "").lower()
+    if not source and os.environ.get("DEX_LIVE", "").lower() in {"1", "true", "yes"}:
+        source = "dexscreener"  # deprecated alias
+    if source == "onchain":
+        return RobinhoodChainFactoryProvider(dexscreener=DexScreenerProvider())
+    if source == "dexscreener":
         return DexScreenerProvider()
     return MockProvider()
 

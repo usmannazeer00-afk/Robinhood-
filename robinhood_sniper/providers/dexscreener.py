@@ -71,6 +71,42 @@ class DexScreenerProvider(PairDataProvider):
             snapshots.append(snap)
         return snapshots
 
+    def enrich_by_token(self, snapshot: TokenSnapshot) -> TokenSnapshot:
+        """Fills in market cap/liquidity/volume/buys-sells for a snapshot
+        discovered elsewhere (e.g. an on-chain PoolCreated watcher) by
+        looking the token address up directly, rather than by name search.
+        Falls back to the original snapshot if DexScreener hasn't indexed
+        the pool yet (common for a pool that's only seconds/minutes old).
+        """
+        url = f"{self.api_base}/token-pairs/v1/{self.chain_id}/{snapshot.token_address}"
+        try:
+            resp = self.session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            pairs = resp.json() or []
+        except (requests.RequestException, ValueError):
+            return snapshot
+        if not pairs:
+            return snapshot
+
+        match = next(
+            (p for p in pairs if p.get("pairAddress", "").lower() == snapshot.pair_address.lower()),
+            None,
+        )
+        raw = match or max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
+        enriched = self._to_snapshot(raw)
+        if enriched is None:
+            return snapshot
+
+        # On-chain identity/timing is authoritative; DexScreener only fills in market data.
+        enriched.pair_address = snapshot.pair_address
+        enriched.token_address = snapshot.token_address
+        enriched.created_at = snapshot.created_at
+        if snapshot.symbol not in ("?", ""):
+            enriched.symbol = snapshot.symbol
+        if snapshot.name not in ("?", ""):
+            enriched.name = snapshot.name
+        return enriched
+
     @staticmethod
     def _to_snapshot(raw: dict[str, Any]) -> TokenSnapshot | None:
         base = raw.get("baseToken") or {}
