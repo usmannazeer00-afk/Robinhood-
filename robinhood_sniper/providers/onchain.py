@@ -41,11 +41,12 @@ from .history import TokenHistoryStore
 
 MAX_SWAP_LOGS_PER_POOL = 500  # cap RPC calls (one eth_getTransaction per swap) per scan
 SWAP_TX_LOOKUP_DELAY_SECONDS = 0.1  # throttle to avoid bursting the public RPC's rate limit
+HISTORY_AUGMENT_BUDGET_SECONDS = 30  # cap total time spent on swap-history RPC calls per scan
 
 T = TypeVar("T")
 
 
-def _with_retry(fn: Callable[[], T], retries: int = 3, base_delay: float = 1.5) -> T:
+def _with_retry(fn: Callable[[], T], retries: int = 2, base_delay: float = 1.0) -> T:
     """Retries on 429 (public RPC rate limit) with exponential backoff.
     Other exceptions propagate immediately -- only rate limiting is transient here."""
     for attempt in range(retries + 1):
@@ -192,20 +193,32 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         return wallets
 
     def _augment_with_history(
-        self, snapshot: TokenSnapshot, token0: str, new_token: str, pool_created_block: int, latest_block: int
+        self,
+        snapshot: TokenSnapshot,
+        token0: str,
+        new_token: str,
+        pool_created_block: int,
+        latest_block: int,
+        do_rpc_update: bool,
     ) -> None:
+        """Reads accumulated history into the snapshot, and -- budget permitting
+        -- does the RPC work to extend that history with this scan's new data.
+        Skipping the RPC update under a tight time budget just means this
+        particular scan doesn't add a fresh data point; the next one will."""
         pool_address = snapshot.pair_address
         entry = self.history.get(pool_address)
         if entry["pool_created_block"] is None:
             entry["pool_created_block"] = pool_created_block
 
-        from_block = (entry["last_scanned_block"] + 1) if entry["last_scanned_block"] else pool_created_block
-        new_token_is_token0 = new_token.lower() == token0.lower()
-        new_wallets = self._fetch_new_buy_wallets(pool_address, new_token_is_token0, from_block, latest_block)
-        self.history.record_buyers(pool_address, new_wallets, latest_block)
+        live_price = snapshot.price_history[-1].price_usd if snapshot.price_history else None
 
-        if snapshot.price_history:
-            self.history.record_price(pool_address, snapshot.price_history[-1].price_usd)
+        if do_rpc_update:
+            from_block = (entry["last_scanned_block"] + 1) if entry["last_scanned_block"] else pool_created_block
+            new_token_is_token0 = new_token.lower() == token0.lower()
+            new_wallets = self._fetch_new_buy_wallets(pool_address, new_token_is_token0, from_block, latest_block)
+            self.history.record_buyers(pool_address, new_wallets, latest_block)
+            if live_price is not None:
+                self.history.record_price(pool_address, live_price)
 
         snapshot.unique_buyers_series = self.history.buyer_series(pool_address)
         snapshot.price_history = [PricePoint(ts, price) for ts, price in self.history.price_series(pool_address)]
@@ -222,6 +235,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
         block_timestamps: dict[int, int] = {}
         snapshots: list[TokenSnapshot] = []
+        history_deadline = time.monotonic() + HISTORY_AUGMENT_BUDGET_SECONDS
         for log in logs:
             bn = log["blockNumber"]
             if bn not in block_timestamps:
@@ -249,7 +263,9 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             if self.dexscreener is not None:
                 snapshot = self.dexscreener.enrich_by_token(snapshot)
 
-            self._augment_with_history(snapshot, token0, new_token, bn, latest)
+            self._augment_with_history(
+                snapshot, token0, new_token, bn, latest, do_rpc_update=time.monotonic() < history_deadline
+            )
 
             if snapshot.age_minutes <= config.age_max_minutes:
                 snapshots.append(snapshot)
