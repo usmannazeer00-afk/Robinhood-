@@ -450,13 +450,24 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
                 return None
 
         enriched: list[tuple[TokenSnapshot, str, Callable[[int, int], set[str]], int]] = []
-        with ThreadPoolExecutor(max_workers=IDENTIFY_ENRICH_WORKERS) as executor:
+        # Deliberately not a `with` block: ThreadPoolExecutor.__exit__ calls
+        # shutdown(wait=True) unconditionally, which would block until every
+        # submitted task finishes regardless of the `wait(timeout=...)`
+        # below -- silently turning the budget into a no-op. shutdown here
+        # is explicit and non-blocking instead: cancel_futures drops
+        # anything not yet started, and any already-running task (bounded
+        # by DexScreener's own short per-call timeout) is left to finish on
+        # its own rather than held up for.
+        executor = ThreadPoolExecutor(max_workers=IDENTIFY_ENRICH_WORKERS)
+        try:
             futures = [executor.submit(identify_and_enrich, item) for item in tagged_logs]
             done, _not_done = wait(futures, timeout=IDENTIFY_ENRICH_BUDGET_SECONDS)
             for future in done:
                 result = future.result()
                 if result is not None:
                     enriched.append(result)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
         # Preserve newest-first order (thread completion order isn't ordered).
         enriched.sort(key=lambda item: item[3], reverse=True)
