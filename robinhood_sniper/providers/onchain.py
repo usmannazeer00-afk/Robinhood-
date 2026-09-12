@@ -26,9 +26,11 @@ TokenSnapshot before scoring.
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, TypeVar
 
+from requests.exceptions import HTTPError
 from web3 import Web3
 
 from ..config import SniperConfig
@@ -38,6 +40,23 @@ from .dexscreener import DexScreenerProvider
 from .history import TokenHistoryStore
 
 MAX_SWAP_LOGS_PER_POOL = 500  # cap RPC calls (one eth_getTransaction per swap) per scan
+SWAP_TX_LOOKUP_DELAY_SECONDS = 0.1  # throttle to avoid bursting the public RPC's rate limit
+
+T = TypeVar("T")
+
+
+def _with_retry(fn: Callable[[], T], retries: int = 3, base_delay: float = 1.5) -> T:
+    """Retries on 429 (public RPC rate limit) with exponential backoff.
+    Other exceptions propagate immediately -- only rate limiting is transient here."""
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except HTTPError as e:
+            is_rate_limited = e.response is not None and e.response.status_code == 429
+            if not is_rate_limited or attempt == retries:
+                raise
+            time.sleep(base_delay * (2**attempt))
+    raise AssertionError("unreachable")  # loop always returns or raises
 
 MAINNET_CHAIN_ID = 4663
 TESTNET_CHAIN_ID = 46630
@@ -132,12 +151,12 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         self.history = history or TokenHistoryStore()
 
     def _estimate_block_time_seconds(self, sample_blocks: int = 2000) -> float:
-        latest = self.w3.eth.block_number
+        latest = _with_retry(lambda: self.w3.eth.block_number)
         older = max(latest - sample_blocks, 0)
         if older == latest:
             return 0.25
-        t_latest = self.w3.eth.get_block(latest)["timestamp"]
-        t_older = self.w3.eth.get_block(older)["timestamp"]
+        t_latest = _with_retry(lambda: self.w3.eth.get_block(latest))["timestamp"]
+        t_older = _with_retry(lambda: self.w3.eth.get_block(older))["timestamp"]
         return max((t_latest - t_older) / (latest - older), 0.01)
 
     def _lookup_symbol_name(self, token_address: str) -> tuple[str, str]:
@@ -154,7 +173,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             return set()
         pool = self.w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=_POOL_ABI)
         try:
-            logs = pool.events.Swap().get_logs(from_block=from_block, to_block=to_block)
+            logs = _with_retry(lambda: pool.events.Swap().get_logs(from_block=from_block, to_block=to_block))
         except Exception:
             return set()  # a pool this fresh may have no state at from_block yet, or the RPC balked
 
@@ -165,10 +184,11 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             try:
                 # The Swap event's own `sender` is usually just the router;
                 # the transaction's actual sender is the real trading wallet.
-                tx = self.w3.eth.get_transaction(log["transactionHash"])
+                tx = _with_retry(lambda log=log: self.w3.eth.get_transaction(log["transactionHash"]))
                 wallets.add(tx["from"])
             except Exception:
                 continue
+            time.sleep(SWAP_TX_LOOKUP_DELAY_SECONDS)
         return wallets
 
     def _augment_with_history(
@@ -192,18 +212,20 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
     def fetch_new_pairs(self, config: SniperConfig) -> list[TokenSnapshot]:
         block_time = self._estimate_block_time_seconds()
-        latest = self.w3.eth.block_number
+        latest = _with_retry(lambda: self.w3.eth.block_number)
         blocks_back = int((config.age_max_minutes * 60) / block_time) + 10
         from_block = max(latest - blocks_back, 0)
 
-        logs = self.factory.events.PoolCreated().get_logs(from_block=from_block, to_block=latest)
+        logs = _with_retry(
+            lambda: self.factory.events.PoolCreated().get_logs(from_block=from_block, to_block=latest)
+        )
 
         block_timestamps: dict[int, int] = {}
         snapshots: list[TokenSnapshot] = []
         for log in logs:
             bn = log["blockNumber"]
             if bn not in block_timestamps:
-                block_timestamps[bn] = self.w3.eth.get_block(bn)["timestamp"]
+                block_timestamps[bn] = _with_retry(lambda bn=bn: self.w3.eth.get_block(bn))["timestamp"]
             created_at = datetime.fromtimestamp(block_timestamps[bn], tz=timezone.utc)
 
             token0, token1, pool = log["args"]["token0"], log["args"]["token1"], log["args"]["pool"]
