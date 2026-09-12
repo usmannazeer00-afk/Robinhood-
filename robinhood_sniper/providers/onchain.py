@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar
 
@@ -59,7 +61,14 @@ from .history import TokenHistoryStore
 MAX_SWAP_LOGS_PER_POOL = 500  # cap RPC calls (one eth_getTransaction per swap) per scan
 SWAP_TX_LOOKUP_DELAY_SECONDS = 0.1  # throttle to avoid bursting the public RPC's rate limit
 HISTORY_AUGMENT_BUDGET_SECONDS = 30  # cap total time spent on swap-history RPC calls per scan
-SCAN_TIME_BUDGET_SECONDS = 75  # hard cap on the whole scan; watching v3+v4 means unbounded candidate counts
+
+# Discovery + DexScreener enrichment is dominated by per-token network I/O
+# to a *different* host than our rate-limited chain RPC, so it's safe (and
+# necessary at this chain's launch volume -- 1000+ new pools per 45-minute
+# window isn't unusual) to parallelize heavily. The RPC-bound swap-history
+# phase that follows stays sequential; that's the resource under contention.
+IDENTIFY_ENRICH_WORKERS = 20
+IDENTIFY_ENRICH_BUDGET_SECONDS = 90
 
 T = TypeVar("T")
 
@@ -211,15 +220,26 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         )
         self.dexscreener = dexscreener
         self.history = history or TokenHistoryStore()
+        self._history_lock = threading.Lock()
 
-    def _estimate_block_time_seconds(self, sample_blocks: int = 2000) -> float:
+    def _estimate_block_time_and_latest_ts(self, sample_blocks: int = 2000) -> tuple[int, int, float]:
+        """Returns (latest_block, latest_block_timestamp, seconds_per_block).
+
+        Concurrent per-log timestamp lookups (`eth_getBlock` for every
+        distinct block number among potentially thousands of candidates)
+        would itself become an RPC bottleneck, so block timestamps are
+        approximated by linear interpolation from this single measurement
+        rather than fetched individually -- plenty precise for a filter
+        that reasons in whole minutes.
+        """
         latest = _with_retry(lambda: self.w3.eth.block_number)
+        t_latest = _with_retry(lambda: self.w3.eth.get_block(latest))["timestamp"]
         older = max(latest - sample_blocks, 0)
         if older == latest:
-            return 0.25
-        t_latest = _with_retry(lambda: self.w3.eth.get_block(latest))["timestamp"]
+            return latest, t_latest, 0.25
         t_older = _with_retry(lambda: self.w3.eth.get_block(older))["timestamp"]
-        return max((t_latest - t_older) / (latest - older), 0.01)
+        block_time = max((t_latest - t_older) / (latest - older), 0.01)
+        return latest, t_latest, block_time
 
     def _lookup_symbol_name(self, token_address: str) -> tuple[str, str]:
         try:
@@ -229,10 +249,18 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             return "?", "?"
 
     def _cached_symbol_name(self, history_key: str, token_address: str) -> tuple[str, str]:
-        entry = self.history.get(history_key)
-        if entry["symbol"] is None:
-            entry["symbol"], entry["name"] = self._lookup_symbol_name(token_address)
-        return entry["symbol"], entry["name"]
+        with self._history_lock:
+            cached_symbol, cached_name = self.history.get(history_key)["symbol"], self.history.get(history_key)["name"]
+        if cached_symbol is not None:
+            return cached_symbol, cached_name
+
+        symbol, name = self._lookup_symbol_name(token_address)  # RPC call -- deliberately outside the lock
+
+        with self._history_lock:
+            entry = self.history.get(history_key)
+            if entry["symbol"] is None:
+                entry["symbol"], entry["name"] = symbol, name
+            return entry["symbol"], entry["name"]
 
     def _extract_buy_wallets(self, logs: list[Any], new_token_is_token0: bool) -> set[str]:
         wallets: set[str] = set()
@@ -288,22 +316,30 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         """Reads accumulated history into the snapshot, and -- budget permitting
         -- does the RPC work to extend that history with this scan's new data.
         Skipping the RPC update under a tight time budget just means this
-        particular scan doesn't add a fresh data point; the next one will."""
-        entry = self.history.get(history_key)
-        if entry["pool_created_block"] is None:
-            entry["pool_created_block"] = pool_created_block
+        particular scan doesn't add a fresh data point; the next one will.
+
+        This phase runs sequentially (unlike identify+enrich), so the lock
+        below is just cheap bookkeeping around it -- `fetch_wallets` (the
+        actual RPC work) is the only slow part and isn't itself concurrent
+        here."""
+        with self._history_lock:
+            entry = self.history.get(history_key)
+            if entry["pool_created_block"] is None:
+                entry["pool_created_block"] = pool_created_block
+            from_block = (entry["last_scanned_block"] + 1) if entry["last_scanned_block"] else pool_created_block
 
         live_price = snapshot.price_history[-1].price_usd if snapshot.price_history else None
 
         if do_rpc_update:
-            from_block = (entry["last_scanned_block"] + 1) if entry["last_scanned_block"] else pool_created_block
             new_wallets = fetch_wallets(from_block, latest_block)
-            self.history.record_buyers(history_key, new_wallets, latest_block)
-            if live_price is not None:
-                self.history.record_price(history_key, live_price)
+            with self._history_lock:
+                self.history.record_buyers(history_key, new_wallets, latest_block)
+                if live_price is not None:
+                    self.history.record_price(history_key, live_price)
 
-        snapshot.unique_buyers_series = self.history.buyer_series(history_key)
-        snapshot.price_history = [PricePoint(ts, price) for ts, price in self.history.price_series(history_key)]
+        with self._history_lock:
+            snapshot.unique_buyers_series = self.history.buyer_series(history_key)
+            snapshot.price_history = [PricePoint(ts, price) for ts, price in self.history.price_series(history_key)]
 
     def _base_snapshot(
         self, config: SniperConfig, history_key: str, new_token: str, pair_address: str, created_at: datetime
@@ -321,9 +357,14 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             deployer=DeployerInfo(),
         )
 
-    def _process_v3_log(
-        self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime], latest: int, history_deadline: float
-    ) -> TokenSnapshot | None:
+    # -- Phase 1: identify + enrich. Network-I/O-bound (mostly DexScreener,
+    # a different host than the chain RPC), safe to run with heavy
+    # concurrency. Returns (snapshot, history_key, fetch_wallets, pool_created_block)
+    # or None -- the swap-history augmentation happens later, sequentially.
+
+    def _identify_and_enrich_v3(
+        self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime]
+    ) -> tuple[TokenSnapshot, str, Callable[[int, int], set[str]], int] | None:
         bn = log["blockNumber"]
         token0, token1, pool = log["args"]["token0"], log["args"]["token1"], log["args"]["pool"]
         new_token = pick_new_token(token0, token1)
@@ -335,19 +376,12 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             snapshot = self.dexscreener.enrich_by_token(snapshot)
 
         new_token_is_token0 = new_token.lower() == token0.lower()
-        self._augment_with_history(
-            snapshot,
-            pool,
-            lambda fb, tb, p=pool, nt0=new_token_is_token0: self._fetch_new_buy_wallets_v3(p, nt0, fb, tb),
-            bn,
-            latest,
-            do_rpc_update=time.monotonic() < history_deadline,
-        )
-        return snapshot
+        fetch_wallets = lambda fb, tb, p=pool, nt0=new_token_is_token0: self._fetch_new_buy_wallets_v3(p, nt0, fb, tb)
+        return snapshot, pool, fetch_wallets, bn
 
-    def _process_v4_log(
-        self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime], latest: int, history_deadline: float
-    ) -> TokenSnapshot | None:
+    def _identify_and_enrich_v4(
+        self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime]
+    ) -> tuple[TokenSnapshot, str, Callable[[int, int], set[str]], int] | None:
         bn = log["blockNumber"]
         currency0, currency1, pool_id = log["args"]["currency0"], log["args"]["currency1"], log["args"]["id"]
         new_token = pick_new_token(currency0, currency1)
@@ -360,15 +394,10 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             snapshot = self.dexscreener.enrich_by_token(snapshot)
 
         new_token_is_currency0 = new_token.lower() == currency0.lower()
-        self._augment_with_history(
-            snapshot,
-            pool_id_hex,
-            lambda fb, tb, pid=pool_id, nt0=new_token_is_currency0: self._fetch_new_buy_wallets_v4(pid, nt0, fb, tb),
-            bn,
-            latest,
-            do_rpc_update=time.monotonic() < history_deadline,
+        fetch_wallets = lambda fb, tb, pid=pool_id, nt0=new_token_is_currency0: self._fetch_new_buy_wallets_v4(
+            pid, nt0, fb, tb
         )
-        return snapshot
+        return snapshot, pool_id_hex, fetch_wallets, bn
 
     def _fetch_creation_logs_or_empty(self, label: str, fn: Callable[[], list[Any]]) -> list[Any]:
         """Losing one version's discovery entirely (crashing the whole scan)
@@ -384,8 +413,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             return []
 
     def fetch_new_pairs(self, config: SniperConfig) -> list[TokenSnapshot]:
-        block_time = self._estimate_block_time_seconds()
-        latest = _with_retry(lambda: self.w3.eth.block_number)
+        latest, latest_ts, block_time = self._estimate_block_time_and_latest_ts()
         blocks_back = int((config.age_max_minutes * 60) / block_time) + 10
         from_block = max(latest - blocks_back, 0)
 
@@ -396,34 +424,59 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             "v4", lambda: self.pool_manager_v4.events.Initialize().get_logs(from_block=from_block, to_block=latest)
         )
 
-        # Newest first: if a launch wave means the scan can't cover everything
-        # within its time budget, the freshest candidates (the ones actually
-        # worth sniping) get processed before older ones that are about to
-        # age out of the window anyway.
+        # Newest first: under a time budget, the freshest candidates (the
+        # ones actually worth sniping) get priority over older ones about
+        # to age out of the window anyway.
         tagged_logs = sorted(
             [("v3", log) for log in v3_logs] + [("v4", log) for log in v4_logs],
             key=lambda item: item[1]["blockNumber"],
             reverse=True,
         )
 
-        block_timestamps: dict[int, int] = {}
-
         def block_time_of(block_number: int) -> datetime:
-            if block_number not in block_timestamps:
-                block_timestamps[block_number] = _with_retry(lambda: self.w3.eth.get_block(block_number))["timestamp"]
-            return datetime.fromtimestamp(block_timestamps[block_number], tz=timezone.utc)
+            approx_ts = latest_ts - (latest - block_number) * block_time
+            return datetime.fromtimestamp(approx_ts, tz=timezone.utc)
 
+        # Phase 1: identify + enrich every candidate concurrently. This is
+        # the phase that scales with total launch volume (which can be in
+        # the thousands per window), so it gets real parallelism.
+        def identify_and_enrich(item: tuple[str, Any]):
+            kind, log = item
+            fn = self._identify_and_enrich_v3 if kind == "v3" else self._identify_and_enrich_v4
+            try:
+                return fn(config, log, block_time_of)
+            except Exception:
+                logger.exception("failed to identify/enrich a %s candidate -- skipping it", kind)
+                return None
+
+        enriched: list[tuple[TokenSnapshot, str, Callable[[int, int], set[str]], int]] = []
+        with ThreadPoolExecutor(max_workers=IDENTIFY_ENRICH_WORKERS) as executor:
+            futures = [executor.submit(identify_and_enrich, item) for item in tagged_logs]
+            done, _not_done = wait(futures, timeout=IDENTIFY_ENRICH_BUDGET_SECONDS)
+            for future in done:
+                result = future.result()
+                if result is not None:
+                    enriched.append(result)
+
+        # Preserve newest-first order (thread completion order isn't ordered).
+        enriched.sort(key=lambda item: item[3], reverse=True)
+
+        # Phase 2: swap-history augmentation, sequential -- this is the
+        # RPC-bound phase against our own rate-limited chain RPC, so it
+        # keeps its existing fixed time budget regardless of how many
+        # candidates phase 1 produced.
         snapshots: list[TokenSnapshot] = []
         history_deadline = time.monotonic() + HISTORY_AUGMENT_BUDGET_SECONDS
-        scan_deadline = time.monotonic() + SCAN_TIME_BUDGET_SECONDS
-
-        for kind, log in tagged_logs:
-            if time.monotonic() >= scan_deadline:
-                break  # remaining (older) candidates are picked up on the next scan
-
-            processor = self._process_v3_log if kind == "v3" else self._process_v4_log
-            snapshot = processor(config, log, block_time_of, latest, history_deadline)
-            if snapshot is not None and snapshot.age_minutes <= config.age_max_minutes:
+        for snapshot, history_key, fetch_wallets, pool_created_block in enriched:
+            self._augment_with_history(
+                snapshot,
+                history_key,
+                fetch_wallets,
+                pool_created_block,
+                latest,
+                do_rpc_update=time.monotonic() < history_deadline,
+            )
+            if snapshot.age_minutes <= config.age_max_minutes:
                 snapshots.append(snapshot)
 
         self.history.prune(config.age_max_minutes)
