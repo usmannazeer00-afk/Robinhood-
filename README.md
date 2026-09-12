@@ -70,12 +70,37 @@ Three providers, in increasing order of fidelity:
   Set `ROBINHOOD_RPC_URL` to point at a dedicated RPC (Alchemy, etc.)
   instead of the public rate-limited one for heavier polling.
 
-None of the three give unique-buyer time series, holder distribution, or
-deployer history yet — Robinhood Chain doesn't have a standard block
-explorer API publicly documented as of this writing. Those factors
-gracefully degrade (partial/neutral score with a note) rather than crash
-when the data isn't available. The `ExplorerEnrichment` protocol in
-`providers/dexscreener.py` is the seam to plug one in once available.
+### Persistent history (real buyer/structure scoring)
+
+A single scan is one snapshot in time — it can't tell you whether buyers
+are accelerating or whether price just made a higher low, because those
+need multiple points over time. `RobinhoodChainFactoryProvider` solves
+this with `providers/history.py`: a small JSON file (`TokenHistoryStore`,
+default path `.robinhood_sniper_history.json`, override with
+`SNIPER_HISTORY_PATH`) that persists two **real, on-chain-derived**
+series per pool across scans:
+
+- **Unique buyer wallets** — pulled from actual `Swap` events on the
+  pool contract, using each swap's *transaction sender* (the real
+  trading wallet) rather than the Swap event's own `sender` field (which
+  is almost always just the router contract and would undercount
+  distinct traders). This is genuine wallet-address tracking, not an
+  estimated proxy.
+- **Price points** — sampled from DexScreener's live price at each scan.
+
+Every scan appends to both series (only re-querying swaps since the last
+scanned block, so it stays cheap), and prunes pools that have aged well
+past the sniping window. A cron-driven loop (`/loop` or `CronCreate`,
+each fire a fresh process) shares this state automatically since it's on
+disk, not in memory — so the WATCH/ENTRY calls actually improve as a
+token gets rescanned, instead of permanently missing the two scoring
+categories that need history (20 of the 100 points).
+
+Holder distribution and deployer history still gracefully degrade
+(partial/neutral score with a note) — Robinhood Chain doesn't have a
+standard block explorer API publicly documented as of this writing. The
+`ExplorerEnrichment` protocol in `providers/dexscreener.py` is the seam
+to plug one in once available.
 
 ## Setup
 

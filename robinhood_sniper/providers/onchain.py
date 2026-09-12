@@ -32,9 +32,12 @@ from typing import Any
 from web3 import Web3
 
 from ..config import SniperConfig
-from ..models import DeployerInfo, LiquidityInfo, TokenSnapshot
+from ..models import DeployerInfo, LiquidityInfo, PricePoint, TokenSnapshot
 from .base import PairDataProvider
 from .dexscreener import DexScreenerProvider
+from .history import TokenHistoryStore
+
+MAX_SWAP_LOGS_PER_POOL = 500  # cap RPC calls (one eth_getTransaction per swap) per scan
 
 MAINNET_CHAIN_ID = 4663
 TESTNET_CHAIN_ID = 46630
@@ -68,6 +71,30 @@ _ERC20_ABI: list[dict[str, Any]] = [
     {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
 ]
 
+_POOL_ABI: list[dict[str, Any]] = [
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "sender", "type": "address"},
+            {"indexed": True, "name": "recipient", "type": "address"},
+            {"indexed": False, "name": "amount0", "type": "int256"},
+            {"indexed": False, "name": "amount1", "type": "int256"},
+            {"indexed": False, "name": "sqrtPriceX96", "type": "uint160"},
+            {"indexed": False, "name": "liquidity", "type": "uint128"},
+            {"indexed": False, "name": "tick", "type": "int24"},
+        ],
+        "name": "Swap",
+        "type": "event",
+    }
+]
+
+
+def is_buy_swap(amount0: int, amount1: int, new_token_is_token0: bool) -> bool:
+    """A Uniswap v3 Swap is a buy of the new token when the pool's new-token
+    balance decreased (negative amount = tokens flowing out to the trader)."""
+    amount_new_token = amount0 if new_token_is_token0 else amount1
+    return amount_new_token < 0
+
 
 def pick_new_token(token0: str, token1: str) -> str | None:
     """Returns whichever side of a pool isn't a known base token.
@@ -93,6 +120,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         factory_address: str | None = None,
         dexscreener: DexScreenerProvider | None = None,
         w3: Web3 | None = None,
+        history: TokenHistoryStore | None = None,
     ) -> None:
         self.rpc_url = rpc_url or os.environ.get("ROBINHOOD_RPC_URL", DEFAULT_MAINNET_RPC)
         self.w3 = w3 or Web3(Web3.HTTPProvider(self.rpc_url))
@@ -101,6 +129,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             abi=_FACTORY_ABI,
         )
         self.dexscreener = dexscreener
+        self.history = history or TokenHistoryStore()
 
     def _estimate_block_time_seconds(self, sample_blocks: int = 2000) -> float:
         latest = self.w3.eth.block_number
@@ -117,6 +146,49 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             return token.functions.symbol().call(), token.functions.name().call()
         except Exception:
             return "?", "?"
+
+    def _fetch_new_buy_wallets(
+        self, pool_address: str, new_token_is_token0: bool, from_block: int, to_block: int
+    ) -> set[str]:
+        if from_block > to_block:
+            return set()
+        pool = self.w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=_POOL_ABI)
+        try:
+            logs = pool.events.Swap().get_logs(from_block=from_block, to_block=to_block)
+        except Exception:
+            return set()  # a pool this fresh may have no state at from_block yet, or the RPC balked
+
+        wallets: set[str] = set()
+        for log in logs[:MAX_SWAP_LOGS_PER_POOL]:
+            if not is_buy_swap(log["args"]["amount0"], log["args"]["amount1"], new_token_is_token0):
+                continue
+            try:
+                # The Swap event's own `sender` is usually just the router;
+                # the transaction's actual sender is the real trading wallet.
+                tx = self.w3.eth.get_transaction(log["transactionHash"])
+                wallets.add(tx["from"])
+            except Exception:
+                continue
+        return wallets
+
+    def _augment_with_history(
+        self, snapshot: TokenSnapshot, token0: str, new_token: str, pool_created_block: int, latest_block: int
+    ) -> None:
+        pool_address = snapshot.pair_address
+        entry = self.history.get(pool_address)
+        if entry["pool_created_block"] is None:
+            entry["pool_created_block"] = pool_created_block
+
+        from_block = (entry["last_scanned_block"] + 1) if entry["last_scanned_block"] else pool_created_block
+        new_token_is_token0 = new_token.lower() == token0.lower()
+        new_wallets = self._fetch_new_buy_wallets(pool_address, new_token_is_token0, from_block, latest_block)
+        self.history.record_buyers(pool_address, new_wallets, latest_block)
+
+        if snapshot.price_history:
+            self.history.record_price(pool_address, snapshot.price_history[-1].price_usd)
+
+        snapshot.unique_buyers_series = self.history.buyer_series(pool_address)
+        snapshot.price_history = [PricePoint(ts, price) for ts, price in self.history.price_series(pool_address)]
 
     def fetch_new_pairs(self, config: SniperConfig) -> list[TokenSnapshot]:
         block_time = self._estimate_block_time_seconds()
@@ -155,6 +227,11 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             if self.dexscreener is not None:
                 snapshot = self.dexscreener.enrich_by_token(snapshot)
 
+            self._augment_with_history(snapshot, token0, new_token, bn, latest)
+
             if snapshot.age_minutes <= config.age_max_minutes:
                 snapshots.append(snapshot)
+
+        self.history.prune(config.age_max_minutes)
+        self.history.save()
         return snapshots
