@@ -56,8 +56,12 @@ class SniperConfig:
     mcap_sweet_max: float = 300_000
 
     # 3. Liquidity (USD)
-    liquidity_min: float = 40_000
-    liquidity_preferred_min: float = 40_000
+    # Lowered from the original $40K floor: live data on this chain showed
+    # real, active launches consistently landing in the $20-35K range and
+    # never clearing $40K within the sniping window -- the floor was
+    # excluding everything rather than filtering for quality.
+    liquidity_min: float = 25_000
+    liquidity_preferred_min: float = 25_000
     liquidity_preferred_max: float = 100_000
     mcap_to_liquidity_max: float = 8.0
 
