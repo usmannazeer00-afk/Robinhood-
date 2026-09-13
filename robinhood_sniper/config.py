@@ -50,8 +50,15 @@ class SniperConfig:
     age_ideal_max: float = 30
 
     # 2. Market cap (USD)
+    # mcap_max and mcap_to_liquidity_max raised after XL (X Link) was
+    # filtered out at $548,931 MC / 9.1x MC-to-liquidity, then ran to
+    # $1.5M+ with liquidity growing alongside it rather than getting
+    # pulled -- the original caps assumed a launch that size was already
+    # too late, but real liquidity growing with market cap is a sign of
+    # strength, not a red flag, and $400K/8x turned out too tight for
+    # what a genuine early-stage runner looks like on this chain.
     mcap_min: float = 75_000
-    mcap_max: float = 400_000
+    mcap_max: float = 600_000
     mcap_sweet_min: float = 100_000
     mcap_sweet_max: float = 300_000
 
@@ -63,7 +70,7 @@ class SniperConfig:
     liquidity_min: float = 25_000
     liquidity_preferred_min: float = 25_000
     liquidity_preferred_max: float = 100_000
-    mcap_to_liquidity_max: float = 8.0
+    mcap_to_liquidity_max: float = 10.0
 
     # 5. Buy/sell ratio
     buy_sell_ratio_min: float = 1.5
