@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 
 from .config import SniperConfig, DEFAULT_CONFIG
@@ -136,6 +137,17 @@ def score_token(token: TokenSnapshot, config: SniperConfig = DEFAULT_CONFIG) -> 
     mcap_to_liq = token.mcap_to_liquidity
     if token.liquidity.usd and token.liquidity.usd < 5_000:
         return ScoreResult(0, w.total, Verdict.IGNORE, [], None, "liquidity too thin to be tradable at all")
+
+    first_seen = token.token_first_pool_created_at
+    if first_seen is not None:
+        if first_seen.tzinfo is None:
+            first_seen = first_seen.replace(tzinfo=timezone.utc)
+        first_pool_age = (datetime.now(timezone.utc) - first_seen).total_seconds() / 60.0
+        if first_pool_age > config.age_max_minutes:
+            return ScoreResult(
+                0, w.total, Verdict.IGNORE, [], None,
+                f"not a fresh listing — token already has a pool from {first_pool_age:.0f}m ago (established token, not a new launch)",
+            )
 
     if token.deployer.address and not token.deployer.is_clean:
         reasons = []

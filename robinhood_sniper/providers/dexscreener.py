@@ -100,6 +100,14 @@ class DexScreenerProvider(PairDataProvider):
         if enriched is None:
             return snapshot
 
+        # This token may already have other, older pools -- that's the same
+        # response, just other entries in `pairs`, so check them all rather
+        # than only the one matched above.
+        creation_times_ms = [p.get("pairCreatedAt") for p in pairs if p.get("pairCreatedAt")]
+        if creation_times_ms:
+            earliest_ms = min(creation_times_ms)
+            enriched.token_first_pool_created_at = datetime.fromtimestamp(earliest_ms / 1000, tz=timezone.utc)
+
         # On-chain identity/timing is authoritative; DexScreener only fills in market data.
         enriched.pair_address = snapshot.pair_address
         enriched.token_address = snapshot.token_address

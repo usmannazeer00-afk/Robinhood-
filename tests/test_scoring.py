@@ -59,6 +59,27 @@ def test_dirty_deployer_is_a_hard_filter_regardless_of_other_factors():
     assert "deployer" in result.hard_filter_failed
 
 
+def test_an_old_tokens_freshly_spun_up_pool_is_rejected_as_not_a_new_listing():
+    """A pool created 10 minutes ago looks fresh on its own, but if the same
+    token already has another pool from a month ago, it's an established
+    token re-pooling, not a new launch -- must not slip through on the new
+    pool's own age."""
+    now = datetime.now(timezone.utc)
+    token = _base_token(token_first_pool_created_at=now - timedelta(days=30))
+    result = score_token(token)
+    assert result.verdict == Verdict.IGNORE
+    assert result.total == 0
+    assert "not a fresh listing" in result.hard_filter_failed
+
+
+def test_a_genuinely_new_tokens_first_pool_is_not_rejected():
+    now = datetime.now(timezone.utc)
+    token = _base_token(token_first_pool_created_at=now - timedelta(minutes=15))  # same as created_at
+    result = score_token(token)
+    assert result.hard_filter_failed is None
+    assert result.verdict == Verdict.ENTRY
+
+
 def test_wrong_chain_is_rejected():
     token = _base_token(chain="ethereum")
     result = score_token(token)

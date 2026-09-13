@@ -80,6 +80,13 @@ class TokenSnapshot:
 
     deployer: DeployerInfo = field(default_factory=DeployerInfo)
 
+    # Earliest known pool-creation time across ALL of this token's pools, not
+    # just this one. A token can spin up new pools long after its real launch
+    # (e.g. an established token re-pooled a month later) -- that new pool's
+    # own creation time looks like a fresh listing unless this catches it.
+    # None means unknown/not checked (e.g. providers other than onchain).
+    token_first_pool_created_at: datetime | None = None
+
     @property
     def age_minutes(self) -> float:
         now = datetime.now(timezone.utc)
