@@ -10,6 +10,7 @@ order flow, and crowded-long positioning all line up.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -48,8 +49,12 @@ class ShortScannerConfig:
     # good the setup looks.
     min_quote_volume_24h: float = 20_000_000
     # After the liquidity pre-filter (one bulk ticker call), cap how many
-    # symbols get the expensive per-symbol kline/funding/OI enrichment --
-    # highest 24h quote volume first.
+    # symbols get the expensive per-symbol kline/funding/OI enrichment.
+    # "quote_volume" (default) ranks by 24h traded value; "gainers" ranks
+    # by 24h price change % instead -- a token that already ran hard is
+    # exactly the kind of candidate this rubric's rejection/momentum
+    # factors are built to evaluate for an exhaustion short.
+    rank_by: Literal["quote_volume", "gainers"] = "quote_volume"
     max_symbols_scanned: int = 40
     scan_time_budget_seconds: float = 45.0
 

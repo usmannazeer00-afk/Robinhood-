@@ -37,6 +37,27 @@ def with_retry(fn: Callable[[], T], retries: int = 2, base_delay: float = 1.0) -
     raise AssertionError("unreachable")  # loop always returns or raises
 
 
+def rank_symbols(
+    tickers: list[dict],
+    tradeable: set[str],
+    rank_by: str,
+    limit: int,
+) -> tuple[list[str], dict[str, float]]:
+    """Filters a Binance ticker/24hr payload (spot and futures use the same
+    field names) down to `tradeable` symbols, then ranks by 24h quote
+    volume or 24h price-change % and returns the top `limit` symbols
+    alongside every tradeable symbol's quote volume -- the volumes are
+    still needed afterward as the liquidity-floor hard filter regardless
+    of which ranking mode picked the candidates."""
+    quote_volumes = {t["symbol"]: float(t.get("quoteVolume") or 0.0) for t in tickers if t.get("symbol") in tradeable}
+    if rank_by == "gainers":
+        changes = {t["symbol"]: float(t.get("priceChangePercent") or 0.0) for t in tickers if t.get("symbol") in tradeable}
+        ranked = sorted(changes, key=lambda sym: changes[sym], reverse=True)
+    else:
+        ranked = sorted(quote_volumes, key=lambda sym: quote_volumes[sym], reverse=True)
+    return ranked[:limit], quote_volumes
+
+
 def concurrent_fetch(
     fetch_symbol: Callable[[str, float, "ShortScannerConfig"], "FuturesSnapshot | None"],
     symbols: list[str],

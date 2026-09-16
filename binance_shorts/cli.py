@@ -5,6 +5,10 @@
     python -m binance_shorts.cli scan --source spot               # real Binance SPOT data (no geo-block, no proxy needed)
     python -m binance_shorts.cli scan --source binance --best     # only the single best short setup
     python -m binance_shorts.cli scan --min-score 60
+    python -m binance_shorts.cli scan --source spot --rank-by gainers --limit 15
+        # only scan the top 15 symbols by 24h price gain instead of by
+        # volume -- a token that already ran hard is exactly the kind of
+        # candidate the rejection/momentum factors are built to evaluate
     python -m binance_shorts.cli scan --source binance --proxy http://user:pass@host:port
         # route around Binance futures' geo/IP restriction (a 451 from
         # most cloud hosts) via an HTTP/HTTPS/SOCKS proxy -- or set
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 
 from .config import DEFAULT_CONFIG
 from .formatting import format_scan_results, format_symbol_block
@@ -51,12 +56,25 @@ def main(argv: list[str] | None = None) -> int:
         help="HTTP/HTTPS/SOCKS proxy URL for --source binance (overrides BINANCE_PROXY_URL); "
         "use this if Binance returns 451 from your host's IP",
     )
+    scan_parser.add_argument(
+        "--rank-by", choices=["volume", "gainers"], default="volume",
+        help="pick candidates by 24h quote volume (default) or by 24h price gain",
+    )
+    scan_parser.add_argument(
+        "--limit", type=int, default=None,
+        help=f"how many top-ranked symbols to scan (default {DEFAULT_CONFIG.max_symbols_scanned})",
+    )
 
     args = parser.parse_args(argv)
 
     if args.command == "scan":
         provider = _build_provider(args.source, proxy_url=args.proxy)
-        results = scan(provider, DEFAULT_CONFIG, min_score=args.min_score)
+        config = replace(
+            DEFAULT_CONFIG,
+            rank_by="gainers" if args.rank_by == "gainers" else "quote_volume",
+            max_symbols_scanned=args.limit if args.limit is not None else DEFAULT_CONFIG.max_symbols_scanned,
+        )
+        results = scan(provider, config, min_score=args.min_score)
         if args.best:
             if not results:
                 print("No candidates matched.")

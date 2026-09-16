@@ -28,7 +28,7 @@ from requests.exceptions import RequestException
 
 from ..config import ShortScannerConfig
 from ..models import Candle, FuturesSnapshot
-from ._http import REQUEST_TIMEOUT_SECONDS, concurrent_fetch, with_retry
+from ._http import REQUEST_TIMEOUT_SECONDS, concurrent_fetch, rank_symbols, with_retry
 from .base import FuturesDataProvider
 
 logger = logging.getLogger(__name__)
@@ -89,9 +89,7 @@ class BinanceFuturesProvider(FuturesDataProvider):
         }
 
         tickers = self._get("/fapi/v1/ticker/24hr")
-        quote_volumes = {t["symbol"]: float(t.get("quoteVolume") or 0.0) for t in tickers if t.get("symbol") in tradeable}
-        ranked = sorted(quote_volumes, key=lambda sym: quote_volumes[sym], reverse=True)
-        return ranked[: config.max_symbols_scanned], quote_volumes
+        return rank_symbols(tickers, tradeable, config.rank_by, config.max_symbols_scanned)
 
     def _fetch_symbol(self, symbol: str, quote_volume_24h: float, config: ShortScannerConfig) -> FuturesSnapshot | None:
         try:
