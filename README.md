@@ -158,3 +158,91 @@ guarantee. Keep position sizes small, decide your invalidation level
 before entering, and treat slippage settings as an execution parameter,
 not a safety net. This tool is for informational/research purposes only
 and is not financial advice.
+
+---
+
+# Binance 15m Futures Short-Setup Scanner (`binance_shorts`)
+
+A second, independent bot in this repo: scans Binance USDT-M perpetual
+futures on the **15-minute chart** and scores how good a *short* setup
+each symbol currently is. Same philosophy as the sniper bot above --
+**scanner and alerting only, it never places an order** -- and it only
+ever calls Binance's public, unauthenticated market-data endpoints, so
+there's no API key to configure or protect.
+
+## Strategy implemented
+
+Rather than picking tops, the rubric rewards a **pullback-into-resistance
+short inside an already-confirmed downtrend**: a higher-timeframe filter
+keeps it from fighting a strong uptrend, and full points only come when
+trend, structure, a price-action rejection, momentum, order flow, and
+crowded-long positioning all agree.
+
+| Factor | Points |
+|---|---|
+| Higher-timeframe (1h) trend below EMA20/EMA50 | 15 |
+| 15m swing structure (lower highs / lower lows) | 15 |
+| Rejection candle at resistance (shooting star / bearish engulfing) | 15 |
+| Momentum turning down (RSI rollover, bearish divergence, or MACD cross) | 15 |
+| Volume / order-flow (bearish volume spike, taker sell dominance) | 15 |
+| Positioning (funding rate + open interest into the move) | 15 |
+| Risk/reward (ATR-based entry/stop/target) | 10 |
+| **Total** | **100** |
+
+Score bands: **>=75 = 🟢 SHORT**, **60-74 = 🟡 WATCH**, **<60 = 🔴 AVOID**.
+Hard filters (forced to 0 regardless of other factors): not enough 15m/1h
+candle history yet, or 24h quote volume below the liquidity floor (thin
+futures books are unreliable to trade regardless of setup quality).
+
+All thresholds live in `binance_shorts/config.py` (`ShortScannerConfig`).
+
+## Data source
+
+`BinanceFuturesProvider` reads only public REST endpoints on
+`fapi.binance.com` -- `exchangeInfo`, `ticker/24hr`, `klines`,
+`premiumIndex`, `openInterestHist` -- none of which need an API key or
+request signing, so this provider can only ever read market state, never
+touch an account or place a trade. It pre-filters to USDT-M perpetuals
+above a 24h quote-volume floor (avoiding thin/manipulable books), ranks
+by volume, then enriches the top symbols concurrently under a fixed time
+budget (mirroring the retry/backoff and time-budgeted concurrency used by
+the on-chain sniper provider above).
+
+`MockFuturesProvider` (default) generates a deterministic set of
+synthetic symbols spanning the full range -- a clean downtrend pullback
+that scores 90+, a strong uptrend that's correctly avoided, a choppy
+symbol, and a too-thin one -- so `/shortscan` works out of the box.
+
+## Usage
+
+**Telegram bot:**
+
+```bash
+export TELEGRAM_BOT_TOKEN=xxxxx
+export BINANCE_SOURCE=binance   # omit for mock demo data
+python -m binance_shorts.bot
+```
+
+Commands:
+- `/shortscan [min_score]` -- scan now, return every candidate at/above min_score
+- `/bestshort` -- scan now, return only the single best short setup right now
+- `/params` -- show the active scanner configuration
+
+**CLI:**
+
+```bash
+python -m binance_shorts.cli scan                            # mock data
+python -m binance_shorts.cli scan --source binance            # real Binance USDT-M futures data
+python -m binance_shorts.cli scan --source binance --best     # only the single best setup
+python -m binance_shorts.cli scan --min-score 60
+```
+
+## Risk notes
+
+Shorting leveraged perpetual futures carries liquidation risk that spot
+and simple meme-coin sniping don't: a stop-loss protects you against the
+market, but not against an exchange-side liquidation cascade, a funding
+bill, or slippage on a thin book. A 🟢 SHORT verdict is a filter passing,
+not a guarantee -- confirm the setup on the chart yourself, size small,
+and set your stop before entering, not after. This tool is for
+informational/research purposes only and is not financial advice.
