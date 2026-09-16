@@ -13,50 +13,27 @@ server) -- this affects most cloud/datacenter IP ranges, not just one
 provider. `proxy_url` (or `BINANCE_PROXY_URL`) routes every request
 through an HTTP/HTTPS/SOCKS proxy with an eligible egress IP instead;
 without one, this provider only works from a host Binance doesn't block.
+See `binance_spot.py` for a source that's reachable without a proxy at all.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import time
-from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
-from typing import Any, Callable, TypeVar
+from typing import Any
 
 import requests
-from requests.exceptions import HTTPError, RequestException
+from requests.exceptions import RequestException
 
 from ..config import ShortScannerConfig
 from ..models import Candle, FuturesSnapshot
+from ._http import REQUEST_TIMEOUT_SECONDS, concurrent_fetch, with_retry
 from .base import FuturesDataProvider
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://fapi.binance.com"
-REQUEST_TIMEOUT_SECONDS = 10
-
-# Per-symbol kline/funding/OI enrichment is network-I/O-bound against one
-# host, so it's safe to parallelize -- mirrors the identify+enrich phase
-# in the Robinhood Chain sniper's onchain provider.
-ENRICH_WORKERS = 10
-
-T = TypeVar("T")
-
-
-def _with_retry(fn: Callable[[], T], retries: int = 2, base_delay: float = 1.0) -> T:
-    """Retries on 429 (rate limit) and 418 (IP auto-ban warning) with
-    exponential backoff. Anything else propagates immediately -- those two
-    are the only transient/infra-side statuses here, not application bugs."""
-    for attempt in range(retries + 1):
-        try:
-            return fn()
-        except HTTPError as e:
-            status = e.response.status_code if e.response is not None else None
-            if status not in (429, 418) or attempt == retries:
-                raise
-            time.sleep(base_delay * (2**attempt))
-    raise AssertionError("unreachable")  # loop always returns or raises
 
 
 def parse_klines(raw: list[list[Any]]) -> list[Candle]:
@@ -99,7 +76,7 @@ class BinanceFuturesProvider(FuturesDataProvider):
             resp.raise_for_status()
             return resp.json()
 
-        return _with_retry(call)
+        return with_retry(call)
 
     def _liquid_symbols(self, config: ShortScannerConfig) -> tuple[list[str], dict[str, float]]:
         exchange_info = self._get("/fapi/v1/exchangeInfo")
@@ -161,25 +138,4 @@ class BinanceFuturesProvider(FuturesDataProvider):
 
     def fetch_candidates(self, config: ShortScannerConfig) -> list[FuturesSnapshot]:
         symbols, quote_volumes = self._liquid_symbols(config)
-
-        snapshots: list[FuturesSnapshot] = []
-        # Deliberately not a `with` block -- see the identical note in
-        # robinhood_sniper/providers/onchain.py: ThreadPoolExecutor's
-        # __exit__ blocks until every task finishes regardless of the
-        # wait(timeout=...) below, which would turn the time budget into a
-        # no-op. Explicit shutdown(wait=False, cancel_futures=True) instead.
-        executor = ThreadPoolExecutor(max_workers=ENRICH_WORKERS)
-        try:
-            futures = [
-                executor.submit(self._fetch_symbol, symbol, quote_volumes.get(symbol, 0.0), config)
-                for symbol in symbols
-            ]
-            done, _not_done = wait(futures, timeout=config.scan_time_budget_seconds)
-            for future in done:
-                result = future.result()
-                if result is not None:
-                    snapshots.append(result)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-        return snapshots
+        return concurrent_fetch(self._fetch_symbol, symbols, quote_volumes, config)

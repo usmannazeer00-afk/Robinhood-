@@ -2,11 +2,15 @@
 
     python -m binance_shorts.cli scan                            # mock data, for demos/tests
     python -m binance_shorts.cli scan --source binance            # real Binance USDT-M futures data
+    python -m binance_shorts.cli scan --source spot               # real Binance SPOT data (no geo-block, no proxy needed)
     python -m binance_shorts.cli scan --source binance --best     # only the single best short setup
     python -m binance_shorts.cli scan --min-score 60
     python -m binance_shorts.cli scan --source binance --proxy http://user:pass@host:port
-        # route around Binance's geo/IP restriction (a 451 from most cloud
-        # hosts) via an HTTP/HTTPS/SOCKS proxy -- or set BINANCE_PROXY_URL
+        # route around Binance futures' geo/IP restriction (a 451 from
+        # most cloud hosts) via an HTTP/HTTPS/SOCKS proxy -- or set
+        # BINANCE_PROXY_URL. --source spot sidesteps this restriction
+        # entirely (see providers/binance_spot.py) at the cost of no
+        # funding-rate/open-interest data (spot has neither).
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import sys
 from .config import DEFAULT_CONFIG
 from .formatting import format_scan_results, format_symbol_block
 from .providers.binance import BinanceFuturesProvider
+from .providers.binance_spot import BinanceSpotProvider
 from .providers.mock import MockFuturesProvider
 from .scanner import scan
 
@@ -24,6 +29,8 @@ from .scanner import scan
 def _build_provider(source: str, proxy_url: str | None = None):
     if source == "binance":
         return BinanceFuturesProvider(proxy_url=proxy_url)
+    if source == "spot":
+        return BinanceSpotProvider()
     return MockFuturesProvider()
 
 
@@ -33,8 +40,9 @@ def main(argv: list[str] | None = None) -> int:
 
     scan_parser = sub.add_parser("scan", help="scan 15m Binance USDT-M perpetuals for short setups")
     scan_parser.add_argument(
-        "--source", choices=["mock", "binance"], default="mock",
-        help="mock (default, demo data) or binance (real public REST market data)",
+        "--source", choices=["mock", "binance", "spot"], default="mock",
+        help="mock (default, demo data), binance (real futures data, may need --proxy), "
+        "or spot (real spot data via data-api.binance.vision, no geo-block/proxy needed)",
     )
     scan_parser.add_argument("--min-score", type=float, default=0, help="only show symbols scoring at least this many points")
     scan_parser.add_argument("--best", action="store_true", help="only print the single highest-scoring setup")

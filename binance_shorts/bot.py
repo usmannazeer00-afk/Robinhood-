@@ -8,8 +8,12 @@ Setup:
        data (public endpoints, no API key needed). Without it the bot
        serves mock candidates so you can see the output format immediately.
     4. If Binance returns a 451 from your host's IP (it geo/IP-blocks most
-       cloud/datacenter ranges at the CDN edge), export BINANCE_PROXY_URL
-       to route through an HTTP/HTTPS/SOCKS proxy with an eligible egress IP.
+       cloud/datacenter ranges at the CDN edge), either export
+       BINANCE_PROXY_URL to route through an HTTP/HTTPS/SOCKS proxy with
+       an eligible egress IP, or set BINANCE_SOURCE=spot instead -- real
+       Binance spot data via data-api.binance.vision, Binance's public
+       data mirror with no geo-block, at the cost of no funding-rate/
+       open-interest data (spot has neither; see providers/binance_spot.py).
     5. python -m binance_shorts.bot
 
 Commands:
@@ -31,6 +35,7 @@ from .config import DEFAULT_CONFIG
 from .formatting import format_scan_results, format_symbol_block
 from .providers.base import FuturesDataProvider
 from .providers.binance import BinanceFuturesProvider
+from .providers.binance_spot import BinanceSpotProvider
 from .providers.mock import MockFuturesProvider
 from .scanner import scan
 
@@ -44,6 +49,8 @@ def _build_provider() -> FuturesDataProvider:
     source = os.environ.get("BINANCE_SOURCE", "").lower()
     if source == "binance":
         return BinanceFuturesProvider()
+    if source == "spot":
+        return BinanceSpotProvider()
     return MockFuturesProvider()
 
 
