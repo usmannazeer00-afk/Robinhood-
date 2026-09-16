@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from requests.exceptions import HTTPError
+from web3.exceptions import Web3RPCError
 
 from robinhood_sniper.providers.onchain import (
     KNOWN_BASE_TOKENS,
@@ -72,6 +73,22 @@ def test_creation_log_fetch_falls_back_to_empty_on_persistent_rate_limit(tmp_pat
     always_rate_limited = MagicMock(side_effect=HTTPError(response=response))
 
     result = provider._fetch_creation_logs_or_empty("v4", always_rate_limited)
+
+    assert result == []
+
+
+def test_creation_log_fetch_falls_back_to_empty_on_persistent_rpc_timeout(tmp_path, monkeypatch):
+    """Same principle as the rate-limit fallback above, for the other
+    transient failure actually observed live against the public RPC: a
+    Web3RPCError ("context deadline exceeded") under load -- this must not
+    crash the whole scan either."""
+    monkeypatch.setattr("robinhood_sniper.providers.onchain.time.sleep", lambda seconds: None)
+    provider = RobinhoodChainFactoryProvider(
+        w3=MagicMock(), history=TokenHistoryStore(path=str(tmp_path / "hist.json"))
+    )
+    always_timing_out = MagicMock(side_effect=Web3RPCError("context deadline exceeded"))
+
+    result = provider._fetch_creation_logs_or_empty("v3", always_timing_out)
 
     assert result == []
 

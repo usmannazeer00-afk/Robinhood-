@@ -49,6 +49,7 @@ from typing import Any, Callable, TypeVar
 
 from requests.exceptions import HTTPError
 from web3 import Web3
+from web3.exceptions import Web3RPCError
 
 logger = logging.getLogger(__name__)
 
@@ -86,14 +87,20 @@ T = TypeVar("T")
 
 
 def _with_retry(fn: Callable[[], T], retries: int = 2, base_delay: float = 1.0) -> T:
-    """Retries on 429 (public RPC rate limit) with exponential backoff.
-    Other exceptions propagate immediately -- only rate limiting is transient here."""
+    """Retries on 429 (public RPC rate limit) and on Web3RPCError (the node
+    itself erroring -- observed live as "context deadline exceeded" under
+    load) with exponential backoff. Other exceptions propagate immediately --
+    only these are transient/infra-side here, not application bugs."""
     for attempt in range(retries + 1):
         try:
             return fn()
         except HTTPError as e:
             is_rate_limited = e.response is not None and e.response.status_code == 429
             if not is_rate_limited or attempt == retries:
+                raise
+            time.sleep(base_delay * (2**attempt))
+        except Web3RPCError:
+            if attempt == retries:
                 raise
             time.sleep(base_delay * (2**attempt))
     raise AssertionError("unreachable")  # loop always returns or raises
@@ -439,8 +446,8 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         still get returned rather than nothing at all."""
         try:
             return _with_retry(fn, retries=4, base_delay=2.0)
-        except HTTPError:
-            logger.warning("%s pool discovery failed (RPC rate limited) -- skipping this scan", label)
+        except (HTTPError, Web3RPCError):
+            logger.warning("%s pool discovery failed (RPC rate limited or erroring) -- skipping this scan", label)
             return []
 
     def fetch_new_pairs(self, config: SniperConfig) -> list[TokenSnapshot]:
