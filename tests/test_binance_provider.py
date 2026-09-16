@@ -8,6 +8,29 @@ def _kline_row(open_time_ms, o, h, l, c, volume, close_time_ms, taker_buy_base):
     return [open_time_ms, str(o), str(h), str(l), str(c), str(volume), close_time_ms, "0", 10, str(taker_buy_base), "0", "0"]
 
 
+def test_provider_applies_explicit_proxy_url_to_session():
+    provider = BinanceFuturesProvider(proxy_url="http://proxy.example:8080")
+    assert provider.session.proxies == {"http": "http://proxy.example:8080", "https": "http://proxy.example:8080"}
+
+
+def test_provider_falls_back_to_proxy_env_var(monkeypatch):
+    monkeypatch.setenv("BINANCE_PROXY_URL", "socks5h://proxy.example:1080")
+    provider = BinanceFuturesProvider()
+    assert provider.session.proxies == {"http": "socks5h://proxy.example:1080", "https": "socks5h://proxy.example:1080"}
+
+
+def test_explicit_proxy_url_overrides_env_var(monkeypatch):
+    monkeypatch.setenv("BINANCE_PROXY_URL", "http://from-env:8080")
+    provider = BinanceFuturesProvider(proxy_url="http://explicit:8080")
+    assert provider.session.proxies["https"] == "http://explicit:8080"
+
+
+def test_no_proxy_configured_leaves_session_proxies_untouched(monkeypatch):
+    monkeypatch.delenv("BINANCE_PROXY_URL", raising=False)
+    provider = BinanceFuturesProvider()
+    assert provider.session.proxies == {}
+
+
 def test_parse_klines_maps_binance_fields_onto_candle():
     raw = [_kline_row(1_700_000_000_000, 10, 11, 9, 10.5, 100, 1_700_000_899_999, 60)]
     candles = parse_klines(raw)

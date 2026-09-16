@@ -7,7 +7,10 @@ Setup:
     3. export BINANCE_SOURCE=binance to scan real Binance USDT-M futures
        data (public endpoints, no API key needed). Without it the bot
        serves mock candidates so you can see the output format immediately.
-    4. python -m binance_shorts.bot
+    4. If Binance returns a 451 from your host's IP (it geo/IP-blocks most
+       cloud/datacenter ranges at the CDN edge), export BINANCE_PROXY_URL
+       to route through an HTTP/HTTPS/SOCKS proxy with an eligible egress IP.
+    5. python -m binance_shorts.bot
 
 Commands:
     /shortscan [min_score]  - scan now, return every candidate that clears min_score

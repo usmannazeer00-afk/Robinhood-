@@ -6,11 +6,19 @@ needed, so this provider can only ever *read* market state, never place
 or manage an order. That keeps it a scanner/alerting tool, matching this
 repo's other bot: it surfaces candidates and lets you decide, it never
 touches your account.
+
+Binance blocks requests from restricted locations at the CDN edge (a 451
+citing its Terms of Service, before the request ever reaches an app
+server) -- this affects most cloud/datacenter IP ranges, not just one
+provider. `proxy_url` (or `BINANCE_PROXY_URL`) routes every request
+through an HTTP/HTTPS/SOCKS proxy with an eligible egress IP instead;
+without one, this provider only works from a host Binance doesn't block.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -72,9 +80,18 @@ def parse_klines(raw: list[list[Any]]) -> list[Candle]:
 
 
 class BinanceFuturesProvider(FuturesDataProvider):
-    def __init__(self, api_base: str | None = None, session: requests.Session | None = None) -> None:
+    def __init__(
+        self,
+        api_base: str | None = None,
+        session: requests.Session | None = None,
+        proxy_url: str | None = None,
+    ) -> None:
         self.api_base = (api_base or DEFAULT_API_BASE).rstrip("/")
         self.session = session or requests.Session()
+
+        proxy = proxy_url or os.environ.get("BINANCE_PROXY_URL")
+        if proxy:
+            self.session.proxies.update({"http": proxy, "https": proxy})
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         def call():

@@ -213,6 +213,18 @@ synthetic symbols spanning the full range -- a clean downtrend pullback
 that scores 90+, a strong uptrend that's correctly avoided, a choppy
 symbol, and a too-thin one -- so `/shortscan` works out of the box.
 
+### Binance's geo/IP restriction (451) and proxy support
+
+Binance blocks requests from most cloud/datacenter IP ranges at the CDN
+edge, before the request ever reaches an app server -- a `451` citing
+"b. Eligibility" in its Terms of Service. This isn't specific to one
+provider or one host: it was reproduced from two independent cloud
+environments while building this bot. If you hit it, set `proxy_url` (or
+the `BINANCE_PROXY_URL` env var / `--proxy` CLI flag) to an HTTP/HTTPS/SOCKS
+proxy with an eligible egress IP -- `BinanceFuturesProvider` routes every
+request through it via `requests`' standard proxy support. A SOCKS proxy
+(`socks5h://...`) additionally needs the optional `pysocks` package.
+
 ## Usage
 
 **Telegram bot:**
@@ -220,6 +232,7 @@ symbol, and a too-thin one -- so `/shortscan` works out of the box.
 ```bash
 export TELEGRAM_BOT_TOKEN=xxxxx
 export BINANCE_SOURCE=binance   # omit for mock demo data
+export BINANCE_PROXY_URL=http://user:pass@host:port   # only if Binance 451s your host
 python -m binance_shorts.bot
 ```
 
@@ -235,6 +248,7 @@ python -m binance_shorts.cli scan                            # mock data
 python -m binance_shorts.cli scan --source binance            # real Binance USDT-M futures data
 python -m binance_shorts.cli scan --source binance --best     # only the single best setup
 python -m binance_shorts.cli scan --min-score 60
+python -m binance_shorts.cli scan --source binance --proxy http://user:pass@host:port  # if Binance 451s your host
 ```
 
 ## Risk notes
