@@ -23,9 +23,10 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 DEFAULT_HISTORY_PATH = os.environ.get("SNIPER_HISTORY_PATH", ".robinhood_sniper_history.json")
+EARLY_BUYERS_CAP = 50  # first-N buyer wallets kept in entry order, for smart-wallet detection
 
 
 def _empty_entry() -> dict[str, Any]:
@@ -37,6 +38,7 @@ def _empty_entry() -> dict[str, Any]:
         "price_points": [],  # [[iso_timestamp, price_usd], ...]
         "buyer_wallets": [],  # cumulative distinct wallet addresses (lowercase)
         "buyer_series": [],  # [[iso_timestamp, cumulative_unique_count], ...]
+        "early_buyers": [],  # first EARLY_BUYERS_CAP distinct buyer wallets, in the order they bought
         "bundle_checked": False,  # whether the creation-block bundle check has run (runs once)
         "bundle_same_block_buyer_count": 0,
         "bundle_detected": False,
@@ -74,9 +76,21 @@ class TokenHistoryStore:
         entry = self.get(pool_address)
         entry["price_points"].append([datetime.now(timezone.utc).isoformat(), price_usd])
 
-    def record_buyers(self, pool_address: str, new_wallets: set[str], last_block: int) -> None:
+    def record_buyers(self, pool_address: str, new_wallets: Iterable[str], last_block: int) -> None:
+        """`new_wallets` should iterate in the order the wallets bought (an
+        insertion-ordered dict/list) so early_buyers keeps real entry order;
+        a plain set still works, it just loses that ordering."""
         entry = self.get(pool_address)
-        known = set(entry["buyer_wallets"]) | {w.lower() for w in new_wallets}
+        new_wallets = [w.lower() for w in new_wallets]
+        early = entry["early_buyers"]
+        seen = set(early)
+        for w in new_wallets:
+            if len(early) >= EARLY_BUYERS_CAP:
+                break
+            if w not in seen:
+                early.append(w)
+                seen.add(w)
+        known = set(entry["buyer_wallets"]) | set(new_wallets)
         entry["buyer_wallets"] = sorted(known)
         entry["buyer_series"].append([datetime.now(timezone.utc).isoformat(), len(known)])
         entry["last_scanned_block"] = last_block
@@ -98,6 +112,10 @@ class TokenHistoryStore:
     def buyer_series(self, pool_address: str) -> list[int]:
         entry = self.get(pool_address)
         return [count for _, count in entry["buyer_series"]]
+
+    def entries(self) -> dict[str, dict[str, Any]]:
+        """All tracked pools, keyed by lowercase pool address/id."""
+        return self._data
 
     def prune(self, max_age_minutes: float) -> None:
         """Drops entries whose last price sample is well past the sniping window."""

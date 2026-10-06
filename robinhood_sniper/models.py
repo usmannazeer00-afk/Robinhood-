@@ -38,6 +38,23 @@ class LiquidityInfo:
 
 
 @dataclass
+class TokenProfile:
+    """The token's public "story" and backing, as published on DexScreener.
+
+    Presence of links is what can actually be checked here -- a website
+    and an X account existing doesn't prove the team behind them is real,
+    only that someone bothered to set them up (most instant rugs don't).
+    """
+
+    description: str = ""
+    websites: list[str] = field(default_factory=list)
+    socials: dict[str, str] = field(default_factory=dict)  # type ("twitter", "telegram", ...) -> url
+    has_image: bool = False
+    boosts_active: int = 0  # paid DexScreener boosts -- someone is spending money on this token
+    community_takeover: bool = False
+
+
+@dataclass
 class PricePoint:
     timestamp: datetime
     price_usd: float
@@ -79,6 +96,12 @@ class TokenSnapshot:
     top20_holder_pct: float | None = None
 
     deployer: DeployerInfo = field(default_factory=DeployerInfo)
+
+    profile: TokenProfile = field(default_factory=TokenProfile)
+
+    # Distinct buyer wallets in the order they first bought, earliest first
+    # (capped). Used to spot known smart wallets getting in early.
+    early_buyers: list[str] = field(default_factory=list)
 
     # Earliest known pool-creation time across ALL of this token's pools, not
     # just this one. A token can spin up new pools long after its real launch

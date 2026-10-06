@@ -12,7 +12,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from ..config import SniperConfig
-from ..models import DeployerInfo, LiquidityInfo, PricePoint, TokenSnapshot
+from ..models import DeployerInfo, LiquidityInfo, PricePoint, TokenProfile, TokenSnapshot
 from .base import PairDataProvider
 
 
@@ -25,6 +25,20 @@ def _price_path(launch: float, peak_mult: float, retrace_pct: float, points: int
     step = timedelta(minutes=20 / max(points, 1))
     start = now - step * (len(path_prices) - 1)
     return [PricePoint(start + step * i, p) for i, p in enumerate(path_prices)]
+
+
+# Wallets the mock data treats as smart money -- seed a SmartWalletBook
+# with these to demo the FOMO flow (the CLI/bot do this for --source mock).
+MOCK_SMART_WALLETS = {
+    "0x5a1e0000000000000000000000000000000000a1": "demo whale A",
+    "0x5a1e0000000000000000000000000000000000b2": "demo whale B",
+    "0x5a1e0000000000000000000000000000000000c3": "demo whale C",
+}
+_SMART = list(MOCK_SMART_WALLETS)
+
+
+def _crowd(n: int, start: int = 0) -> list[str]:
+    return [f"0x{i:040x}" for i in range(start + 1, start + n + 1)]
 
 
 class MockProvider(PairDataProvider):
@@ -54,6 +68,15 @@ class MockProvider(PairDataProvider):
                 top10_holder_pct=27.0,
                 top20_holder_pct=41.0,
                 deployer=DeployerInfo(address="0xDEPLOYER_CLEAN"),
+                profile=TokenProfile(
+                    description="Sniper Prime is the community token for Robinhood Chain traders -- "
+                    "tokenized stocks by day, memes by night.",
+                    websites=["https://example.com/snipe"],
+                    socials={"twitter": "https://x.com/example_snipe", "telegram": "https://t.me/example_snipe"},
+                    has_image=True,
+                    boosts_active=1,
+                ),
+                early_buyers=_crowd(3) + [_SMART[0]] + _crowd(5, 3) + [_SMART[1]] + _crowd(10, 8),
             ),
             TokenSnapshot(
                 chain=config.chain,
@@ -75,6 +98,8 @@ class MockProvider(PairDataProvider):
                 top10_holder_pct=38.0,
                 top20_holder_pct=55.0,
                 deployer=DeployerInfo(address="0xDEPLOYER_WASH"),
+                profile=TokenProfile(description="wen moon", has_image=True),
+                early_buyers=_crowd(40, 100) + [_SMART[2]],
             ),
             TokenSnapshot(
                 chain=config.chain,

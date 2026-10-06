@@ -6,3 +6,5 @@ venv/
 .pytest_cache/
 *.egg-info/
 .robinhood_sniper_history.json
+.robinhood_sniper_smart_wallets.json
+.robinhood_sniper_positions.json

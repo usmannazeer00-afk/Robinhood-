@@ -102,6 +102,60 @@ standard block explorer API publicly documented as of this writing. The
 `ExplorerEnrichment` protocol in `providers/dexscreener.py` is the seam
 to plug one in once available.
 
+## FOMO bot: story + backing + smart money
+
+`fomo` runs on top of the sniper scan and looks for coins with a real
+story, visible backing, and **smart wallets buying early**, then
+**paper-buys** them. A token is a 🚀 BUY only when all of these hold:
+
+- it passes the sniper hard filters and scores at least WATCH (65+),
+- FOMO score >= 60 (rubric below),
+- at least 2 known smart wallets are among its early buyers,
+- it has a website or an X account.
+
+| FOMO factor | What it checks | Points |
+|---|---|---|
+| Story | written description (8), hot narrative theme (10), image (3), community takeover / boost (4) | 25 |
+| Backing | website (8), X (8), Telegram/Discord (6), paid DexScreener boost (4), LP locked/burned (4) | 30 |
+| Smart money | 15 per smart wallet in the first 30 buyers, 7.5 per later one | 45 |
+
+Story and backing come from DexScreener (pair `info` links, and the
+token-profiles feed for descriptions). They prove that someone put in
+effort, not that the team is honest, which is why smart money carries the
+most weight and the deployer/bundle hard filters still apply. Narrative
+themes are a keyword list in `fomo.py` (`DEFAULT_THEMES`); tune it to
+whatever is running.
+
+**Smart wallets** live in `.robinhood_sniper_smart_wallets.json`
+(`SNIPER_SMART_WALLETS_PATH`):
+
+- *Manual:* follow wallets you trust: `wallets add 0x... --label "name"`
+  or `/addwallet 0x... name` in Telegram.
+- *Learned:* the on-chain provider records each pool's first 50 buyers
+  in order. When a pool's tracked price reaches 3x its first sample,
+  its first 15 buyers each get a win. After wins on 2 different pools, a
+  wallet counts as smart. Bundle-flagged pools are skipped, so the bot
+  doesn't learn to follow insiders. The book only grows while scans run
+  repeatedly (cron/`/loop`), so expect it to be empty at first.
+
+**Buying** is paper-only: each BUY is recorded to
+`.robinhood_sniper_positions.json` (`SNIPER_POSITIONS_PATH`) with entry
+price and scores, at a fixed size ($25 by default), with at most 5 open
+positions and no buying the same token twice. Use it to check how the
+signals actually perform. A live executor plugs in behind the
+`BuyExecutor` interface in `trading.py`.
+
+```bash
+python -m robinhood_sniper.cli fomo                      # demo on mock data (nothing saved)
+python -m robinhood_sniper.cli fomo --source onchain     # real launches, paper-buys BUY signals
+python -m robinhood_sniper.cli fomo --source onchain --no-buy --all   # signals only, show everything
+python -m robinhood_sniper.cli wallets add 0xabc... --label "good trader"
+python -m robinhood_sniper.cli wallets list
+python -m robinhood_sniper.cli positions
+```
+
+Telegram: `/fomo`, `/wallets`, `/addwallet 0x... [label]`, `/positions`.
+
 ## Setup
 
 ```bash

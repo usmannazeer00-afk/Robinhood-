@@ -45,7 +45,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Collection, TypeVar
 
 from requests.exceptions import HTTPError
 from web3 import Web3
@@ -283,14 +283,16 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
     def _extract_buy_wallets(
         self, logs: list[Any], new_token_is_token0: bool, creation_block: int
-    ) -> tuple[set[str], set[str]]:
+    ) -> tuple[Collection[str], set[str]]:
         """Returns (all buy wallets, buy wallets whose swap landed within
         BUNDLE_WINDOW_BLOCKS of the pool's creation block). The second set
         is naturally empty on every call after the first, since `from_block`
         moves past the window once a pool has been scanned once -- no
         separate "only check once" bookkeeping needed here, just at the
         point where it's persisted."""
-        wallets: set[str] = set()
+        # dict, not set: keeps first-buy order so the history can tell which
+        # wallets were *early* (what smart-wallet detection keys on).
+        wallets: dict[str, None] = {}
         early_wallets: set[str] = set()
         bundle_window_end = creation_block + BUNDLE_WINDOW_BLOCKS - 1
         for log in logs[:MAX_SWAP_LOGS_PER_POOL]:
@@ -300,17 +302,17 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
                 # The Swap event's own `sender` is usually just the router;
                 # the transaction's actual sender is the real trading wallet.
                 tx = _with_retry(lambda log=log: self.w3.eth.get_transaction(log["transactionHash"]))
-                wallets.add(tx["from"])
+                wallets.setdefault(tx["from"], None)
                 if creation_block <= log["blockNumber"] <= bundle_window_end:
                     early_wallets.add(tx["from"])
             except Exception:
                 continue
             time.sleep(SWAP_TX_LOOKUP_DELAY_SECONDS)
-        return wallets, early_wallets
+        return wallets.keys(), early_wallets
 
     def _fetch_new_buy_wallets_v3(
         self, pool_address: str, new_token_is_token0: bool, creation_block: int, from_block: int, to_block: int
-    ) -> tuple[set[str], set[str]]:
+    ) -> tuple[Collection[str], set[str]]:
         if from_block > to_block:
             return set(), set()
         pool = self.w3.eth.contract(address=Web3.to_checksum_address(pool_address), abi=_POOL_ABI)
@@ -322,7 +324,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
     def _fetch_new_buy_wallets_v4(
         self, pool_id: bytes, new_token_is_currency0: bool, creation_block: int, from_block: int, to_block: int
-    ) -> tuple[set[str], set[str]]:
+    ) -> tuple[Collection[str], set[str]]:
         if from_block > to_block:
             return set(), set()
         try:
@@ -339,7 +341,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
         self,
         snapshot: TokenSnapshot,
         history_key: str,
-        fetch_wallets: Callable[[int, int], tuple[set[str], set[str]]],
+        fetch_wallets: Callable[[int, int], tuple[Collection[str], set[str]]],
         pool_created_block: int,
         latest_block: int,
         do_rpc_update: bool,
@@ -376,6 +378,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
             snapshot.unique_buyers_series = self.history.buyer_series(history_key)
             snapshot.price_history = [PricePoint(ts, price) for ts, price in self.history.price_series(history_key)]
             snapshot.deployer.linked_to_launch_bundles = entry["bundle_detected"]
+            snapshot.early_buyers = list(entry["early_buyers"])
 
     def _base_snapshot(
         self, config: SniperConfig, history_key: str, new_token: str, pair_address: str, created_at: datetime
@@ -400,7 +403,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
     def _identify_and_enrich_v3(
         self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime]
-    ) -> tuple[TokenSnapshot, str, Callable[[int, int], tuple[set[str], set[str]]], int] | None:
+    ) -> tuple[TokenSnapshot, str, Callable[[int, int], tuple[Collection[str], set[str]]], int] | None:
         bn = log["blockNumber"]
         token0, token1, pool = log["args"]["token0"], log["args"]["token1"], log["args"]["pool"]
         new_token = pick_new_token(token0, token1)
@@ -419,7 +422,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
 
     def _identify_and_enrich_v4(
         self, config: SniperConfig, log: Any, block_time_of: Callable[[int], datetime]
-    ) -> tuple[TokenSnapshot, str, Callable[[int, int], tuple[set[str], set[str]]], int] | None:
+    ) -> tuple[TokenSnapshot, str, Callable[[int, int], tuple[Collection[str], set[str]]], int] | None:
         bn = log["blockNumber"]
         currency0, currency1, pool_id = log["args"]["currency0"], log["args"]["currency1"], log["args"]["id"]
         new_token = pick_new_token(currency0, currency1)
@@ -487,7 +490,7 @@ class RobinhoodChainFactoryProvider(PairDataProvider):
                 logger.exception("failed to identify/enrich a %s candidate -- skipping it", kind)
                 return None
 
-        enriched: list[tuple[TokenSnapshot, str, Callable[[int, int], tuple[set[str], set[str]]], int]] = []
+        enriched: list[tuple[TokenSnapshot, str, Callable[[int, int], tuple[Collection[str], set[str]]], int]] = []
         # Deliberately not a `with` block: ThreadPoolExecutor.__exit__ calls
         # shutdown(wait=True) unconditionally, which would block until every
         # submitted task finishes regardless of the `wait(timeout=...)`

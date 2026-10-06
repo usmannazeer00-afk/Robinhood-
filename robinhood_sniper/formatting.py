@@ -51,3 +51,55 @@ def format_scan_results(items: list[ScannedToken], chain: str, markdown: bool = 
     header = f"🎯 New {chain} pairs — {len(items)} candidate(s)\n" + "=" * 32
     blocks = [format_token_block(item, markdown=markdown) for item in items]
     return "\n\n".join([header] + blocks)
+
+
+def format_fomo_run(run, chain: str, markdown: bool = True, show_skips: bool = False) -> str:
+    """Renders a trading.FomoRun: buys made, then BUY/WATCH (and optionally SKIP) tokens."""
+    from .fomo import FomoAction
+
+    bold = "*" if markdown else ""
+    code = "`" if markdown else ""
+    shown = [r for r in run.results if show_skips or r.action is not FomoAction.SKIP]
+    lines = [f"🔥 FOMO scan — {chain} — {len(run.results)} token(s) checked", "=" * 32]
+
+    if run.newly_smart:
+        lines.append(f"🧠 Learned {len(run.newly_smart)} new smart wallet(s) from tokens that ran")
+    for p in run.bought:
+        lines.append(f"✅ {bold}BOUGHT {p.symbol}{bold} ({p.mode}) — ${p.size_usd:,.0f} @ ${p.entry_price_usd:.8g}")
+    for r, why in run.skipped_buys:
+        lines.append(f"⚠️ BUY signal on {r.token.symbol} not executed: {why}")
+
+    if not shown:
+        lines.append("Nothing with a story, backing and smart money right now. Try again shortly.")
+        return "\n".join(lines)
+
+    for r in shown:
+        t = r.token
+        lines.append("")
+        lines.append(
+            f"{r.action.emoji} {bold}{t.symbol}{bold} ({t.name}) — FOMO {r.score:.0f}/100 — {r.action.value}"
+            f" | sniper {r.scanned.result.total:.0f}/{r.scanned.result.max_total}"
+        )
+        lines.append(f"Age: {t.age_minutes:.0f}m | MC: ${t.market_cap_usd:,.0f} | Liq: ${t.liquidity.usd:,.0f}")
+        for f in r.factors:
+            check = "✅" if f.points >= f.max_points else ("➖" if f.points > 0 else "❌")
+            lines.append(f"{check} {f.name}: {f.points:.1f}/{f.max_points} — {f.note}")
+        for b in r.smart_buyers[:5]:
+            lines.append(f"   🐋 buyer #{b.rank}: {b.description}")
+        if r.reasons:
+            lines.append("Not a buy: " + "; ".join(r.reasons))
+        lines.append(f"Contract: {code}{t.token_address}{code}")
+        lines.append(t.dexscreener_url)
+    return "\n".join(lines)
+
+
+def format_positions(positions) -> str:
+    if not positions:
+        return "No open positions."
+    lines = [f"📒 {len(positions)} position(s)"]
+    for p in positions:
+        lines.append(
+            f"{p.symbol} ({p.mode}) — ${p.size_usd:,.0f} @ ${p.entry_price_usd:.8g} — "
+            f"FOMO {p.fomo_score:.0f}, sniper {p.sniper_score:.0f} — {p.opened_at[:16]}Z"
+        )
+    return "\n".join(lines)

@@ -22,7 +22,7 @@ from typing import Any, Protocol
 import requests
 
 from ..config import SniperConfig
-from ..models import DeployerInfo, LiquidityInfo, PricePoint, TokenSnapshot
+from ..models import DeployerInfo, LiquidityInfo, PricePoint, TokenProfile, TokenSnapshot
 from .base import PairDataProvider
 
 DEFAULT_API_BASE = "https://api.dexscreener.com"
@@ -118,6 +118,57 @@ class DexScreenerProvider(PairDataProvider):
             enriched.name = snapshot.name
         return enriched
 
+    def fetch_latest_profiles(self) -> dict[str, dict[str, Any]]:
+        """Recently published DexScreener token profiles on this chain, keyed
+        by lowercase token address. This is the only place DexScreener
+        exposes a token's free-text description (its "story") -- the pair
+        endpoints carry links and images but not the description. Returns
+        {} on any API error rather than failing the scan.
+        """
+        url = f"{self.api_base}/token-profiles/latest/v1"
+        try:
+            resp = self.session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            rows = resp.json() or []
+        except (requests.RequestException, ValueError):
+            return {}
+        return {
+            row["tokenAddress"].lower(): row
+            for row in rows
+            if row.get("chainId") == self.chain_id and row.get("tokenAddress")
+        }
+
+    @staticmethod
+    def apply_profile_row(snapshot: TokenSnapshot, row: dict[str, Any]) -> None:
+        """Merges a /token-profiles row into the snapshot's profile."""
+        profile = snapshot.profile
+        profile.description = row.get("description") or profile.description
+        profile.community_takeover = bool(row.get("cto")) or profile.community_takeover
+        profile.has_image = profile.has_image or bool(row.get("icon"))
+        for link in row.get("links") or []:
+            url = link.get("url")
+            if not url:
+                continue
+            kind = (link.get("type") or "").lower()
+            if kind:
+                profile.socials.setdefault(kind, url)
+            elif url not in profile.websites:
+                profile.websites.append(url)
+
+    @staticmethod
+    def _parse_profile(raw: dict[str, Any]) -> TokenProfile:
+        info = raw.get("info") or {}
+        return TokenProfile(
+            websites=[w["url"] for w in info.get("websites") or [] if w.get("url")],
+            socials={
+                (s.get("type") or "").lower(): s["url"]
+                for s in info.get("socials") or []
+                if s.get("url") and s.get("type")
+            },
+            has_image=bool(info.get("imageUrl")),
+            boosts_active=int((raw.get("boosts") or {}).get("active") or 0),
+        )
+
     @staticmethod
     def _to_snapshot(raw: dict[str, Any]) -> TokenSnapshot | None:
         base = raw.get("baseToken") or {}
@@ -157,4 +208,5 @@ class DexScreenerProvider(PairDataProvider):
             unique_buyers_series=[],
             price_history=[PricePoint(datetime.now(timezone.utc), price_usd)] if price_usd else [],
             deployer=DeployerInfo(),
+            profile=DexScreenerProvider._parse_profile(raw),
         )

@@ -14,6 +14,10 @@ Commands:
     /newpair [min_score]  - scan now and return scored candidates
     /scan                 - alias for /newpair
     /params               - show the active filter configuration
+    /fomo                 - story + backing + smart money scan; paper-buys BUY signals
+    /wallets              - list smart wallets
+    /addwallet 0x.. [label] - add a smart wallet to follow
+    /positions            - show paper positions
 """
 
 from __future__ import annotations
@@ -26,12 +30,15 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from .config import DEFAULT_CONFIG
-from .formatting import format_scan_results
+from .cli import build_fomo_state
+from .formatting import format_fomo_run, format_positions, format_scan_results
 from .providers.base import PairDataProvider
 from .providers.dexscreener import DexScreenerProvider
 from .providers.mock import MockProvider
 from .providers.onchain import RobinhoodChainFactoryProvider
 from .scanner import scan
+from .smart_wallets import SmartWalletBook
+from .trading import PaperTrader, run_fomo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("robinhood_sniper.bot")
@@ -39,10 +46,15 @@ logger = logging.getLogger("robinhood_sniper.bot")
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 
-def _build_provider() -> PairDataProvider:
+def _source() -> str:
     source = os.environ.get("SNIPER_SOURCE", "").lower()
     if not source and os.environ.get("DEX_LIVE", "").lower() in {"1", "true", "yes"}:
         source = "dexscreener"  # deprecated alias
+    return source or "mock"
+
+
+def _build_provider() -> PairDataProvider:
+    source = _source()
     if source == "onchain":
         return RobinhoodChainFactoryProvider(dexscreener=DexScreenerProvider())
     if source == "dexscreener":
@@ -87,6 +99,41 @@ async def newpair_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
 
 
+async def fomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    source = _source()
+    book, trader = build_fomo_state(source)
+    try:
+        run = run_fomo(_build_provider(), book, trader)
+    except Exception:
+        logger.exception("fomo scan failed")
+        await update.message.reply_text("FOMO scan failed — data source error, check bot logs.")
+        return
+    text = format_fomo_run(run, DEFAULT_CONFIG.chain, markdown=False)
+    for chunk in _chunk(text):
+        await update.message.reply_text(chunk, disable_web_page_preview=True)
+
+
+async def wallets_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    book = SmartWalletBook()
+    smart = book.smart_wallets()
+    text = "\n".join(book.describe(a) for a in smart) if smart else "No smart wallets yet. Add one with /addwallet 0x... label"
+    await update.message.reply_text(text)
+
+
+async def addwallet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args or not context.args[0].startswith("0x") or len(context.args[0]) != 42:
+        await update.message.reply_text("Usage: /addwallet 0x<40 hex chars> [label]")
+        return
+    book = SmartWalletBook()
+    book.add(context.args[0], " ".join(context.args[1:]) or None)
+    book.save()
+    await update.message.reply_text(f"Following {book.describe(context.args[0])}")
+
+
+async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(format_positions(PaperTrader().open_positions()))
+
+
 async def params_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     c = DEFAULT_CONFIG
     lines = [
@@ -107,6 +154,10 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("newpair", newpair_command))
     app.add_handler(CommandHandler("scan", newpair_command))
     app.add_handler(CommandHandler("params", params_command))
+    app.add_handler(CommandHandler("fomo", fomo_command))
+    app.add_handler(CommandHandler("wallets", wallets_command))
+    app.add_handler(CommandHandler("addwallet", addwallet_command))
+    app.add_handler(CommandHandler("positions", positions_command))
     return app
 
 
