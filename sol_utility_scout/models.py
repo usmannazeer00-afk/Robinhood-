@@ -30,6 +30,8 @@ class WebsiteProbe:
     has_docs_link: bool = False
     has_github_link: bool = False
     has_app_link: bool = False
+    has_api_link: bool = False  # a public API: api.* subdomain or /api path
+    has_bot_link: bool = False  # a Telegram bot (t.me/<name>bot) -- a shipped product
     error: str | None = None
 
 

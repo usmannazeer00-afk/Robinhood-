@@ -55,3 +55,17 @@ def test_parse_website_and_telegram():
     assert parse_telegram_members('<div class="tgme_page_extra">10 444 355 subscribers</div>') == 10_444_355
     assert parse_telegram_members('<div class="tgme_page_extra">1,204 members, 33 online</div>') == 1_204
     assert parse_telegram_members("<div>nothing</div>") is None
+
+
+def test_app_link_ignores_asset_paths():
+    body = '<a href="assets/apple-touch-icon.png"></a><link href="assets/css/app.css?v=1">'
+    assert not parse_website(body, 200)[0].has_app_link
+    for href in ("https://app.proj.xyz", "/app", "https://proj.xyz/app/swap", "app?ref=1"):
+        assert parse_website(f'<a href="{href}">x</a>', 200)[0].has_app_link, href
+
+
+def test_api_and_bot_links_detected():
+    probe, _ = parse_website('<a href="/api">API</a><a href="https://t.me/isitbundled_bot">bot</a><a href="https://t.me/community">tg</a>', 200)
+    assert probe.has_api_link and probe.has_bot_link
+    plain, _ = parse_website('<a href="https://t.me/community">tg</a><a href="/apiary.png">x</a>', 200)
+    assert not plain.has_api_link and not plain.has_bot_link

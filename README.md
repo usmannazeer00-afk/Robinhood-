@@ -204,8 +204,8 @@ Like the sniper, it never trades.
    over 45%, more than 2 RugCheck "danger" risks. A token joins the
    watchlist only if it rates **≥55**, isn't classified as a meme, and
    scores at least 40% on Utility. It also needs at least one **proof
-   of real tech**: a GitHub repo, docs/whitepaper, or a link to a
-   working app. Keywords are cheap to write; these take real work to fake.
+   of real tech**: a GitHub repo, docs/whitepaper, a link to a working
+   app, a public API, or a Telegram bot. Keywords are cheap to write; these take real work to fake.
 4. **Track for 7 days**: every cycle re-observes each watched token and
    logs **post-launch events**: socials or website added or removed,
    website down or back up, description updated, liquidity ±40-50%,

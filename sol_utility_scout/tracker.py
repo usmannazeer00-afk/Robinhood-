@@ -182,7 +182,7 @@ class Tracker:
                 self.store.mark_rejected(addr, [f"not a utility project ({rating.category}, utility {rating.utility:.0f}/{self.config.weights.utility})"])
                 report.rejected += 1
             elif len(rating.tech_proof) < self.config.tech_proof_min:
-                self.store.mark_rejected(addr, ["no proof of real tech (no GitHub, docs or app link)"])
+                self.store.mark_rejected(addr, ["no proof of real tech (no GitHub, docs, app, API or bot link)"])
                 report.rejected += 1
             elif rating.total < self.config.watch_rating_min:
                 self.store.mark_rejected(addr, [f"rating {rating.total:.0f} < {self.config.watch_rating_min:.0f}"])
@@ -306,7 +306,7 @@ class Tracker:
             if dd >= self.config.drawdown_kill_pct:
                 self._drop(record, f"price down {dd:.0f}% from tracked high", report)
                 return
-        reason = self._flush_reason(record, snap)
+        reason = self._flush_reason(record, snap, rating)
         if reason:
             self._drop(record, f"flushed: {reason}", report)
             return
@@ -314,9 +314,16 @@ class Tracker:
         if (now - datetime.fromisoformat(start["at"])).total_seconds() >= self.config.tracking_days * 86_400:
             self._review_period(record, snap, rating, report)
 
-    def _flush_reason(self, record: dict[str, Any], snap: Snapshot) -> str | None:
+    def _flush_reason(self, record: dict[str, Any], snap: Snapshot, rating: Rating) -> str | None:
         """Why a watched token is no longer worth holding, or None if it still is."""
         c = self.config
+        # The watchlist entry gates apply on every check, not just the first:
+        # a re-read website can reveal a meme, or a product link can vanish.
+        if rating.category == "meme":
+            return "re-classified as a meme"
+        site_down = snap.website is not None and not snap.website.reachable  # an outage is its own event, not lost proof
+        if not site_down and len(rating.tech_proof) < c.tech_proof_min:
+            return "no proof of real tech any more (no GitHub, docs, app, API or bot link)"
         if len(record["series"]) < c.flush_min_checks:
             return None
         conviction, first = record["conviction"], record["series"][0]

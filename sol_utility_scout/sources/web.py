@@ -28,6 +28,11 @@ MAX_BYTES = 400_000
 _TAG_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>|<[^>]+>", re.S | re.I)
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
 _HREF_RE = re.compile(r'href=["\']([^"\']+)["\']', re.I)
+# A link to an app: an app.* subdomain or an /app path segment -- not any
+# href containing "/app" (that matched assets/apple-touch-icon.png and css/app.css).
+_APP_LINK_RE = re.compile(r"^https?://app\.|/app(?:[/?#]|$)|^/?app(?:[/?#]|$)")
+_API_LINK_RE = re.compile(r"^https?://api\.|/api(?:[/?#]|$)|^/?api(?:[/?#]|$)")
+_BOT_LINK_RE = re.compile(r"t\.me/[a-z0-9_]+bot(?:[/?#]|$)")
 _TG_EXTRA_RE = re.compile(r'tgme_page_extra">\s*([\d\s,.]+)\s*(members|subscribers)', re.I)
 
 
@@ -71,7 +76,9 @@ def parse_website(body: str, status: int) -> tuple[WebsiteProbe, str]:
         utility_hits=[kw for kw in PRODUCT_EVIDENCE if kw in lowered],
         has_docs_link=any("gitbook" in h or "/docs" in h or "docs." in h or "whitepaper" in h for h in hrefs),
         has_github_link=any("github.com/" in h for h in hrefs),
-        has_app_link=any(h.startswith("https://app.") or "/app" in h or "launch app" in lowered for h in hrefs),
+        has_app_link=any(_APP_LINK_RE.search(h) for h in hrefs),
+        has_api_link=any(_API_LINK_RE.search(h) for h in hrefs),
+        has_bot_link=any(_BOT_LINK_RE.search(h) for h in hrefs),
     )
     return probe, f"{title} {text[:20_000]}"
 

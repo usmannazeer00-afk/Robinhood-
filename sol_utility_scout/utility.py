@@ -24,7 +24,11 @@ UTILITY_CATEGORIES: dict[str, list[str]] = {
 }
 
 # Signals of an actual product rather than a pitch.
-PRODUCT_EVIDENCE = ["whitepaper", "litepaper", "docs", "documentation", "roadmap", "tokenomics", "audit", "github", "beta", "testnet", "mainnet", "launch app", "dapp", "app.", "dashboard", "revenue", "buyback"]
+PRODUCT_EVIDENCE = ["whitepaper", "litepaper", "docs", "documentation", "roadmap", "tokenomics", "audit", "github", "beta", "testnet", "mainnet", "launch app", "dapp", "dashboard", "revenue", "buyback"]
+
+# Phrases a project only uses about itself -- these count wherever they
+# appear, website included ("$SIC is a community memecoin. No product.").
+SELF_DECLARED_MEME = ["memecoin", "meme coin", "no utility", "no product", "just a meme", "community meme"]
 
 MEME_MARKERS = ["meme", "memecoin", "moon", "pepe", "doge", "shib", "shiba", "inu", "wojak", "frog", "cat coin", "100x", "1000x", "lfg", "send it", "pump it", "ape in", "no utility", "just a meme", "community token", "fair launch only", "elon", "trump", "bonk"]
 
@@ -62,6 +66,8 @@ def classify(*texts: str) -> tuple[str, dict[str, int], list[str], list[str]]:
     # elsewhere (launchpad-hosted pages carry generic "docs/audit" boilerplate).
     if texts and any(_matches(texts[0].lower(), kw) for kw in ("meme", "memecoin")):
         return "meme", counts, evidence, memes
+    if any(_matches(blob, kw) for kw in SELF_DECLARED_MEME):
+        return "meme", counts, evidence, memes + [kw for kw in SELF_DECLARED_MEME if _matches(blob, kw)]
     # ...and so does a meme marker in the token's own name ("Super Market Inu").
     if len(texts) > 1 and texts[1] and any(_matches(texts[1].lower(), kw) for kw in MEME_MARKERS):
         return "meme", counts, evidence, memes

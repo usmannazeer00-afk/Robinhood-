@@ -205,3 +205,13 @@ def test_manual_flush(tmp_path):
     assert t.flush("LDGR", "thin socials")["status"] == DROPPED
     assert "flushed manually: thin socials" == Store(str(tmp_path / "s.json")).get(ADDR)["status_reason"]
     assert t.flush("LDGR", "again") is None
+
+
+def test_watched_token_that_loses_tech_proof_is_flushed(tmp_path):
+    from sol_utility_scout.models import WebsiteProbe
+
+    t, _, _, web = _tracker(tmp_path)
+    t.run_cycle()
+    web.website = lambda url: (WebsiteProbe(reachable=True, status=200, text_length=5_000), "ai agent terminal docs roadmap " * 30)
+    t.run_cycle()
+    assert "no proof of real tech" in t.store.get(ADDR)["status_reason"]

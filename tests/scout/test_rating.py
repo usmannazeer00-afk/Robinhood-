@@ -87,3 +87,8 @@ def test_tech_proof_counts_as_product_evidence():
 def test_meme_marker_in_name_is_a_meme():
     cat, *_ = classify("The same superhero shiba does the weekly shop", "Super Market Inu SUPMKT", "payments app dashboard")
     assert cat == "meme"
+
+
+def test_website_self_declared_memecoin_is_a_meme():
+    cat, *_ = classify("The Queen of AI Intelligence", "Super Intelligent Claudia SIC", "$SIC is a community memecoin on Solana. No product.")
+    assert cat == "meme"

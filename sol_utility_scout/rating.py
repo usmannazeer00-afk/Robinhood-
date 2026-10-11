@@ -123,7 +123,7 @@ def rate(snap: Snapshot, config: ScoutConfig, website_text: str = "") -> Rating:
         traction_raw += 2 * _lin(snap.buys_h24 / total_tx, 0.45, 0.6)
     traction = traction_raw / 10 * w.traction
 
-    notes.append("tech proof: " + (", ".join(proof) if proof else "none (no GitHub, docs or app link)"))
+    notes.append("tech proof: " + (", ".join(proof) if proof else "none (no GitHub, docs, app, API or bot link)"))
 
     reasons = hard_filter_reasons(snap, config)
     total = round(utility + socials + safety + market + traction, 1)
@@ -152,4 +152,8 @@ def tech_proof(snap: Snapshot) -> list[str]:
         proof.append("docs")
     if site and site.reachable and site.has_app_link:
         proof.append("app")
+    if site and site.reachable and site.has_api_link:
+        proof.append("api")
+    if site and site.reachable and site.has_bot_link:
+        proof.append("telegram bot")
     return proof

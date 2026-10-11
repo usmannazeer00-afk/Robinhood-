@@ -68,7 +68,8 @@ class ScoutConfig:
     # otherwise a well-run meme with great traction would fill the watchlist.
     utility_min_ratio: float = 0.4
     # "Real tech" gate: at least this many proofs that a product exists --
-    # a GitHub link, a docs/whitepaper link, or a link to a working app.
+    # a GitHub link, a docs/whitepaper link, a link to a working app, a
+    # public API, or a Telegram bot.
     # Keywords alone are cheap to write; these take actual work to fake.
     tech_proof_min: int = 1
     # Labels on the conviction score
