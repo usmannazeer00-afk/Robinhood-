@@ -64,3 +64,8 @@ def test_insiders_reduce_safety():
     s.insiders_detected = 200
     dirty = rate(_snap(safety=s), DEFAULT_CONFIG)
     assert dirty.safety < clean.safety - 8
+
+
+def test_self_described_meme_beats_boilerplate_website_keywords():
+    cat, *_ = classify("First Quantum meme launched on a launchpad", "EINSTEIN", "docs audit mainnet protocol infrastructure api sdk")
+    assert cat == "meme"

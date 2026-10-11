@@ -54,6 +54,10 @@ def classify(*texts: str) -> tuple[str, dict[str, int], list[str], list[str]]:
     utility_hits = sum(counts.values())
     if not utility_hits and not memes:
         return "unknown", counts, evidence, memes
+    # The team's own description calling it a meme outweighs keyword hits
+    # elsewhere (launchpad-hosted pages carry generic "docs/audit" boilerplate).
+    if texts and any(_matches(texts[0].lower(), kw) for kw in ("meme", "memecoin")):
+        return "meme", counts, evidence, memes
     if len(memes) >= utility_hits:
         return "meme", counts, evidence, memes
     best = max(counts, key=counts.get) if counts else "unknown"
