@@ -121,3 +121,18 @@ def test_structure_signal_and_step_bounds():
     delta, _ = step(rating_prev=60, rating_now=60, event_weights=[50], holders_prev=100, holders_now=100,
                     days_survived_new=0, prices=[], config=DEFAULT_CONFIG)
     assert delta == DEFAULT_CONFIG.conviction_max_step
+
+
+def test_small_conviction_moves_are_recorded_for_the_trend_arrow(tmp_path):
+    from sol_utility_scout.formatting import _trend
+
+    t, dex, rc, web = _tracker(tmp_path)
+    t.run_cycle()
+    rec = t.store.get(ADDR)
+    rec["conviction_history"].append(["2026-01-01T00:00:00+00:00", rec["conviction"] + 5, ["x"]])
+    rec["conviction"] += 5
+    web.up = False  # website goes down -> negative step
+    t.run_cycle()
+    rec = t.store.get(ADDR)
+    assert rec["conviction_history"][-1][1] == rec["conviction"]
+    assert _trend(rec) == "▼"

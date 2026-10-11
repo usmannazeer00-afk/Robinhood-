@@ -264,10 +264,11 @@ class Tracker:
             config=self.config,
         )
         record["days_credited"] = days
-        record["conviction"] = round(max(0.0, min(100.0, record["conviction"] + delta)), 1)
+        before = record["conviction"]
+        record["conviction"] = round(max(0.0, min(100.0, before + delta)), 1)
         record["conviction_peak"] = max(record["conviction_peak"], record["conviction"])
-        if reasons:
-            record["conviction_history"].append([snap.observed_at, record["conviction"], reasons])
+        if reasons or record["conviction"] != before:  # the trend arrow reads the last two entries
+            record["conviction_history"].append([snap.observed_at, record["conviction"], reasons or ["minor drift"]])
 
         record.update(
             symbol=snap.symbol or record["symbol"],
