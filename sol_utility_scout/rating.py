@@ -51,7 +51,8 @@ def rate(snap: Snapshot, config: ScoutConfig, website_text: str = "") -> Rating:
     notes: list[str] = []
 
     # --- Utility
-    utility, category, unotes = utility_points(snap.description, f"{snap.name} {snap.symbol}", website_text, w.utility)
+    proof = tech_proof(snap)
+    utility, category, unotes = utility_points(snap.description, f"{snap.name} {snap.symbol}", website_text, w.utility, proof)
     notes.extend(unotes)
 
     # --- Socials (out of 20 by default, scaled to the weight)
@@ -122,6 +123,8 @@ def rate(snap: Snapshot, config: ScoutConfig, website_text: str = "") -> Rating:
         traction_raw += 2 * _lin(snap.buys_h24 / total_tx, 0.45, 0.6)
     traction = traction_raw / 10 * w.traction
 
+    notes.append("tech proof: " + (", ".join(proof) if proof else "none (no GitHub, docs or app link)"))
+
     reasons = hard_filter_reasons(snap, config)
     total = round(utility + socials + safety + market + traction, 1)
     return Rating(
@@ -135,4 +138,18 @@ def rate(snap: Snapshot, config: ScoutConfig, website_text: str = "") -> Rating:
         rejected=bool(reasons),
         reject_reasons=reasons,
         notes=notes,
+        tech_proof=proof,
     )
+
+
+def tech_proof(snap: Snapshot) -> list[str]:
+    """Evidence an actual product exists, beyond what the description claims."""
+    site, so = snap.website, snap.socials
+    proof = []
+    if so.github or (site and site.has_github_link):
+        proof.append("github")
+    if so.docs or (site and site.has_docs_link):
+        proof.append("docs")
+    if site and site.reachable and site.has_app_link:
+        proof.append("app")
+    return proof

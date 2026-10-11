@@ -181,6 +181,9 @@ class Tracker:
             elif rating.category == "meme" or rating.utility < self.config.utility_min_ratio * self.config.weights.utility:
                 self.store.mark_rejected(addr, [f"not a utility project ({rating.category}, utility {rating.utility:.0f}/{self.config.weights.utility})"])
                 report.rejected += 1
+            elif len(rating.tech_proof) < self.config.tech_proof_min:
+                self.store.mark_rejected(addr, ["no proof of real tech (no GitHub, docs or app link)"])
+                report.rejected += 1
             elif rating.total < self.config.watch_rating_min:
                 self.store.mark_rejected(addr, [f"rating {rating.total:.0f} < {self.config.watch_rating_min:.0f}"])
                 report.rejected += 1
@@ -303,9 +306,39 @@ class Tracker:
             if dd >= self.config.drawdown_kill_pct:
                 self._drop(record, f"price down {dd:.0f}% from tracked high", report)
                 return
+        reason = self._flush_reason(record, snap)
+        if reason:
+            self._drop(record, f"flushed: {reason}", report)
+            return
         start = record.setdefault("period_start", _period_start_from_series(record))
         if (now - datetime.fromisoformat(start["at"])).total_seconds() >= self.config.tracking_days * 86_400:
             self._review_period(record, snap, rating, report)
+
+    def _flush_reason(self, record: dict[str, Any], snap: Snapshot) -> str | None:
+        """Why a watched token is no longer worth holding, or None if it still is."""
+        c = self.config
+        if len(record["series"]) < c.flush_min_checks:
+            return None
+        conviction, first = record["conviction"], record["series"][0]
+        first_liq = first[3] or 0
+        if conviction < c.flush_conviction_below:
+            return f"conviction fell to {conviction:.1f} (LOW, < {c.flush_conviction_below:.0f})"
+        if (record["conviction_peak"] - conviction >= c.flush_fade_from_peak
+                and record["first_mcap"] and snap.market_cap < record["first_mcap"] * c.flush_fade_mcap_ratio):
+            return (f"fading: conviction {record['conviction_peak']:.0f} -> {conviction:.0f}, "
+                    f"market cap {snap.market_cap / record['first_mcap']:.1f}x of first seen")
+        if first_liq and snap.liquidity_usd < first_liq * c.flush_liquidity_ratio:
+            return f"liquidity bleeding: ${first_liq:,.0f} -> ${snap.liquidity_usd:,.0f}"
+        return None
+
+    def flush(self, query: str, reason: str) -> dict[str, Any] | None:
+        """Manually drop a watched token (CLI/bot /flush). Returns the record, or None if not watched."""
+        record = self.store.find(query)
+        if not record or record["status"] != WATCHING:
+            return None
+        self._drop(record, f"flushed manually: {reason}", CycleReport())
+        self.store.save()
+        return record
 
     def _review_period(self, record: dict[str, Any], snap: Snapshot, rating: Rating, report: CycleReport) -> None:
         """End of a 7-day watch period: keep improving utility projects on the radar, close out the rest."""

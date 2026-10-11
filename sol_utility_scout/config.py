@@ -39,6 +39,15 @@ class ScoutConfig:
     # within this tolerance of where the period started.
     radar_liquidity_tolerance: float = 0.9
 
+    # Flush: drop a watched token early when it stops being worth holding.
+    # Checked from the flush_min_checks-th observation on, so one bad
+    # reading right after launch doesn't kick a token out.
+    flush_min_checks: int = 3
+    flush_conviction_below: float = 55  # conviction fell into LOW
+    flush_fade_from_peak: float = 10  # conviction this far under its peak...
+    flush_fade_mcap_ratio: float = 0.5  # ...while market cap is under this share of first seen
+    flush_liquidity_ratio: float = 0.6  # liquidity bled under this share of first seen
+
     # Hard filters (any of these -> rejected / dropped from the watchlist)
     liquidity_min_usd: float = 10_000
     require_mint_revoked: bool = True
@@ -58,6 +67,10 @@ class ScoutConfig:
     # ...and the utility component alone must clear this share of its weight,
     # otherwise a well-run meme with great traction would fill the watchlist.
     utility_min_ratio: float = 0.4
+    # "Real tech" gate: at least this many proofs that a product exists --
+    # a GitHub link, a docs/whitepaper link, or a link to a working app.
+    # Keywords alone are cheap to write; these take actual work to fake.
+    tech_proof_min: int = 1
     # Labels on the conviction score
     conviction_high: float = 75
     conviction_medium: float = 55

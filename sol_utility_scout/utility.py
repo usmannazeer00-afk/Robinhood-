@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 UTILITY_CATEGORIES: dict[str, list[str]] = {
-    "AI": ["ai agent", "agents", "llm", "machine learning", "inference", "gpt", "neural", "ai-powered", "artificial intelligence"],
+    "AI": ["ai", "ai agent", "agents", "llm", "machine learning", "inference", "gpt", "neural", "ai-powered", "artificial intelligence"],
     "DeFi": ["defi", "staking", "yield", "lending", "borrow", "liquidity protocol", "vault", "perps", "perpetual", "swap", "dex", "amm", "derivatives", "launchpad"],
     "Infra": ["infrastructure", "rpc", "oracle", "indexer", "sdk", "api", "protocol", "layer", "bridge", "validator", "node", "zk", "privacy"],
     "DePIN": ["depin", "compute", "gpu", "storage", "bandwidth", "sensor", "physical infrastructure", "wireless"],
@@ -26,7 +26,7 @@ UTILITY_CATEGORIES: dict[str, list[str]] = {
 # Signals of an actual product rather than a pitch.
 PRODUCT_EVIDENCE = ["whitepaper", "litepaper", "docs", "documentation", "roadmap", "tokenomics", "audit", "github", "beta", "testnet", "mainnet", "launch app", "dapp", "app.", "dashboard", "revenue", "buyback"]
 
-MEME_MARKERS = ["meme", "memecoin", "moon", "pepe", "doge", "shib", "inu", "wojak", "frog", "cat coin", "100x", "1000x", "lfg", "send it", "pump it", "ape in", "no utility", "just a meme", "community token", "fair launch only", "elon", "trump", "bonk"]
+MEME_MARKERS = ["meme", "memecoin", "moon", "pepe", "doge", "shib", "shiba", "inu", "wojak", "frog", "cat coin", "100x", "1000x", "lfg", "send it", "pump it", "ape in", "no utility", "just a meme", "community token", "fair launch only", "elon", "trump", "bonk"]
 
 _word_cache: dict[str, re.Pattern[str]] = {}
 
@@ -49,7 +49,11 @@ def classify(*texts: str) -> tuple[str, dict[str, int], list[str], list[str]]:
     counts = {cat: sum(1 for kw in kws if _matches(blob, kw)) for cat, kws in UTILITY_CATEGORIES.items()}
     counts = {cat: n for cat, n in counts.items() if n}
     evidence = [kw for kw in PRODUCT_EVIDENCE if kw in blob]
-    memes = [kw for kw in MEME_MARKERS if _matches(blob, kw)]
+    # Meme markers only count in what the team says about itself (description,
+    # name). Website text is full of incidental hits -- a "send it" button, a
+    # launchpad called Bonk -- that say nothing about the project.
+    own_words = " ".join(t for t in texts[:2] if t).lower()
+    memes = [kw for kw in MEME_MARKERS if _matches(own_words, kw)]
 
     utility_hits = sum(counts.values())
     if not utility_hits and not memes:
@@ -58,15 +62,22 @@ def classify(*texts: str) -> tuple[str, dict[str, int], list[str], list[str]]:
     # elsewhere (launchpad-hosted pages carry generic "docs/audit" boilerplate).
     if texts and any(_matches(texts[0].lower(), kw) for kw in ("meme", "memecoin")):
         return "meme", counts, evidence, memes
+    # ...and so does a meme marker in the token's own name ("Super Market Inu").
+    if len(texts) > 1 and texts[1] and any(_matches(texts[1].lower(), kw) for kw in MEME_MARKERS):
+        return "meme", counts, evidence, memes
     if len(memes) >= utility_hits:
         return "meme", counts, evidence, memes
     best = max(counts, key=counts.get) if counts else "unknown"
     return best, counts, evidence, memes
 
 
-def utility_points(description: str, name: str, website_text: str, max_points: float) -> tuple[float, str, list[str]]:
-    """Scores 0..max_points for how strongly the project reads as a utility play."""
+def utility_points(description: str, name: str, website_text: str, max_points: float, proof: list[str] | None = None) -> tuple[float, str, list[str]]:
+    """Scores 0..max_points for how strongly the project reads as a utility play.
+
+    ``proof`` (github/docs/app links found on the project) counts as product
+    evidence on top of whatever the text claims."""
     category, counts, evidence, memes = classify(description, name, website_text)
+    evidence = evidence + [f"{p} link" for p in proof or [] if f"{p} link" not in evidence]
     notes: list[str] = []
     utility_hits = sum(counts.values())
 

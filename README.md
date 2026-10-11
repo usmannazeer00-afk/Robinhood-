@@ -203,7 +203,9 @@ Like the sniper, it never trades.
    active mint or freeze authority, liquidity under $10K, top-10 holders
    over 45%, more than 2 RugCheck "danger" risks. A token joins the
    watchlist only if it rates **≥55**, isn't classified as a meme, and
-   scores at least 40% on Utility.
+   scores at least 40% on Utility. It also needs at least one **proof
+   of real tech**: a GitHub repo, docs/whitepaper, or a link to a
+   working app. Keywords are cheap to write; these take real work to fake.
 4. **Track for 7 days**: every cycle re-observes each watched token and
    logs **post-launch events**: socials or website added or removed,
    website down or back up, description updated, liquidity ±40-50%,
@@ -231,7 +233,15 @@ Like the sniper, it never trades.
    has to keep improving to stay. Otherwise it's marked **completed**
    with its final verdict and the checklist of which conditions failed.
    A token that falls 85% from its tracked high, loses its pair, or
-   trips a hard filter is **dropped** at any point. Completed and
+   trips a hard filter is **dropped** at any point. From its third check
+   on, it's also **flushed** when it stops being worth holding:
+   - conviction falls under 55 (LOW),
+   - it's fading: conviction 10+ points under its peak while market cap
+     is under half of first seen,
+   - liquidity has bled below 60% of first seen.
+
+   You can flush a token by hand with `flush <CA|SYMBOL> "reason"` (CLI)
+   or `/flush` (bot). Completed and
    dropped tokens stay in the history.
 
 State is a JSON file (`SCOUT_STORE_PATH`, default `.sol_utility_scout.json`),
@@ -248,6 +258,7 @@ python -m sol_utility_scout loop --every 10      # cycle every 10 min forever
 python -m sol_utility_scout watchlist [--all]    # ranked by conviction (--all adds completed/dropped)
 python -m sol_utility_scout token <CA|SYMBOL>    # full card + post-launch activity log
 python -m sol_utility_scout check <CA>           # rate any Solana token right now (not added)
+python -m sol_utility_scout flush <CA|SYMBOL> "reason"   # drop a watched token by hand
 
 # Telegram bot (runs a cycle every SCOUT_INTERVAL_MIN minutes, pushes alerts)
 export TELEGRAM_BOT_TOKEN=xxxxx
@@ -255,7 +266,7 @@ python -m sol_utility_scout.bot
 ```
 
 Bot commands: `/scan`, `/watchlist`, `/all`, `/token <CA|SYMBOL>`,
-`/check <CA>`, `/subscribe` (push new picks, events and 7-day verdicts
+`/check <CA>`, `/flush <CA|SYMBOL> [reason]`, `/subscribe` (push new picks, events and 7-day verdicts
 to this chat), `/unsubscribe`.
 
 All thresholds and weights live in `sol_utility_scout/config.py`.

@@ -13,6 +13,7 @@ Commands:
     /all                - include completed (7 days done) and dropped tokens
     /token <CA|SYMBOL>  - full card + post-launch activity log
     /check <CA>         - rate any Solana token right now (not added)
+    /flush <CA|SYMBOL> [reason] - drop a watched token
     /subscribe          - push new additions, post-launch events and verdicts here
     /unsubscribe        - stop alerts in this chat
 """
@@ -130,6 +131,16 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _reply(update, text)
 
 
+async def flush_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Usage: /flush <contract address or symbol> [reason]")
+        return
+    reason = " ".join(context.args[1:]) or "not worth holding"
+    async with _cycle_lock:
+        record = await asyncio.to_thread(_tracker(context).flush, context.args[0], reason)
+    await update.message.reply_text(f"Flushed ${record['symbol']}." if record else f"{context.args[0]} is not on the watchlist.")
+
+
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tracker = _tracker(context)
     subs = _subscribers(tracker)
@@ -163,7 +174,7 @@ def build_app() -> Application:
     app.bot_data["tracker"] = tracker
     for name, fn in (
         ("scan", scan_command), ("watchlist", watchlist_command), ("all", all_command),
-        ("token", token_command), ("check", check_command), ("subscribe", subscribe_command),
+        ("token", token_command), ("check", check_command), ("flush", flush_command), ("subscribe", subscribe_command),
         ("unsubscribe", unsubscribe_command), ("start", help_command), ("help", help_command),
     ):
         app.add_handler(CommandHandler(name, fn))

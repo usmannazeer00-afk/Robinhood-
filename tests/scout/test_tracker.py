@@ -166,3 +166,42 @@ def test_small_conviction_moves_are_recorded_for_the_trend_arrow(tmp_path):
     rec = t.store.get(ADDR)
     assert rec["conviction_history"][-1][1] == rec["conviction"]
     assert _trend(rec) == "▼"
+
+
+def test_no_tech_proof_is_not_added(tmp_path):
+    from sol_utility_scout.models import WebsiteProbe
+
+    t, _, _, web = _tracker(tmp_path)
+    web.website = lambda url: (WebsiteProbe(reachable=True, status=200, text_length=5_000), "docs whitepaper roadmap " * 50)
+    assert not t.run_cycle().added
+    assert "no proof of real tech" in t.store.data["rejected"][ADDR]["reasons"][0]
+
+
+def test_liquidity_bleed_flushes_after_grace_checks(tmp_path):
+    t, dex, *_ = _tracker(tmp_path)
+    t.run_cycle()
+    dex.pairs[ADDR] = [make_pair(ADDR, liq=34_000)]  # 57% of first-seen liquidity
+    t.run_cycle()  # second observation: still inside the grace period
+    assert t.store.get(ADDR)["status"] == WATCHING
+    report = t.run_cycle()
+    rec = t.store.get(ADDR)
+    assert rec["status"] == DROPPED and "liquidity bleeding" in rec["status_reason"] and report.dropped
+
+
+def test_fading_token_is_flushed(tmp_path):
+    t, dex, *_ = _tracker(tmp_path)
+    t.run_cycle()
+    rec = t.store.get(ADDR)
+    rec["conviction_peak"] = rec["conviction"] + 15
+    t.run_cycle()
+    dex.pairs[ADDR] = [make_pair(ADDR, mcap=120_000, price=0.0004)]
+    t.run_cycle()
+    assert "fading" in t.store.get(ADDR)["status_reason"]
+
+
+def test_manual_flush(tmp_path):
+    t, *_ = _tracker(tmp_path)
+    t.run_cycle()
+    assert t.flush("LDGR", "thin socials")["status"] == DROPPED
+    assert "flushed manually: thin socials" == Store(str(tmp_path / "s.json")).get(ADDR)["status_reason"]
+    assert t.flush("LDGR", "again") is None

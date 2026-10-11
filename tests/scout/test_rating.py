@@ -69,3 +69,21 @@ def test_insiders_reduce_safety():
 def test_self_described_meme_beats_boilerplate_website_keywords():
     cat, *_ = classify("First Quantum meme launched on a launchpad", "EINSTEIN", "docs audit mainnet protocol infrastructure api sdk")
     assert cat == "meme"
+
+
+def test_website_text_does_not_add_meme_markers():
+    cat, _, _, memes = classify("Solana launch bundle checker", "is it bundled?", "send it via letsbonk launches dashboard tool")
+    assert memes == [] and cat == "Tools"
+
+
+def test_tech_proof_counts_as_product_evidence():
+    from sol_utility_scout.utility import utility_points
+
+    without, *_ = utility_points("", "SUB-01", "a simulated character driven by an ai model", 25)
+    with_proof, *_ = utility_points("", "SUB-01", "a simulated character driven by an ai model", 25, ["github", "app"])
+    assert with_proof >= without + 4
+
+
+def test_meme_marker_in_name_is_a_meme():
+    cat, *_ = classify("The same superhero shiba does the weekly shop", "Super Market Inu SUPMKT", "payments app dashboard")
+    assert cat == "meme"

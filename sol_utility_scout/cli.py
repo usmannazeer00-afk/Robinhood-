@@ -5,6 +5,7 @@
     python -m sol_utility_scout.cli watchlist [--all]  # ranked by conviction
     python -m sol_utility_scout.cli token <CA|SYMBOL>  # full card + 7-day activity log
     python -m sol_utility_scout.cli check <CA>         # rate any Solana token right now (not added)
+    python -m sol_utility_scout.cli flush <CA|SYMBOL> "reason"  # drop a watched token by hand
 """
 
 from __future__ import annotations
@@ -53,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     tk.add_argument("query", help="contract address or symbol")
     ck = sub.add_parser("check", help="rate any Solana token right now without adding it")
     ck.add_argument("address")
+    fl = sub.add_parser("flush", help="drop a watched token from the watchlist")
+    fl.add_argument("query", help="contract address or symbol")
+    fl.add_argument("reason", nargs="?", default="not worth holding")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -70,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     tracker = Tracker(store=store)
+    if args.command == "flush":
+        record = tracker.flush(args.query, args.reason)
+        print(f"Flushed ${record['symbol']}: {record['status_reason']}" if record else f"{args.query} is not on the watchlist")
+        return 0 if record else 1
     if args.command == "check":
         print(check_token(tracker, args.address))
         return 0

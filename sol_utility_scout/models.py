@@ -107,3 +107,4 @@ class Rating:
     rejected: bool = False
     reject_reasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    tech_proof: list[str] = field(default_factory=list)  # github / docs / app
