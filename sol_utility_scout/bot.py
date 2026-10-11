@@ -76,7 +76,7 @@ async def scheduled_cycle(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         logger.exception("scheduled cycle failed")
         return
-    if not (report.added or report.events or report.completed or report.dropped):
+    if not (report.added or report.events or report.completed or report.extended or report.dropped):
         return  # quiet cycle -- don't spam
     text = format_cycle(report, DEFAULT_CONFIG)
     for chat_id in list(_subscribers(_tracker(context))):

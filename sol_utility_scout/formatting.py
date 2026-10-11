@@ -49,12 +49,17 @@ def token_line(record: dict[str, Any], config: ScoutConfig = DEFAULT_CONFIG) -> 
 
 
 def format_watchlist(store: Store, config: ScoutConfig = DEFAULT_CONFIG, include_finished: bool = False) -> str:
-    groups = [("Watching (7-day window)", "watching")]
+    watching = store.by_status("watching")
+    groups = [
+        ("Watching (first 7 days)", [r for r in watching if not r.get("radar_periods")]),
+        ("On radar (past 7 days, still improving)", [r for r in watching if r.get("radar_periods")]),
+    ]
     if include_finished:
-        groups += [("Completed 7-day tracking", "completed"), ("Dropped", "dropped")]
+        groups += [("Completed", store.by_status("completed")), ("Dropped", store.by_status("dropped"))]
     lines: list[str] = []
-    for title, status in groups:
-        records = sorted(store.by_status(status), key=lambda r: -r["conviction"])
+    for title, records in groups:
+        records = sorted(records, key=lambda r: -r["conviction"])
+        status = records[0]["status"] if records else "watching"
         lines.append(f"── {title}: {len(records)}")
         for r in records:
             lines.append(token_line(r, config))
@@ -75,7 +80,8 @@ def format_token(record: dict[str, Any], config: ScoutConfig = DEFAULT_CONFIG, m
         f"${record['symbol']} — {record['name']}  [{record['category']}]",
         f"CA: {record['address']}",
         f"https://dexscreener.com/solana/{record['address']}",
-        f"Status: {record['status']}{' — ' + record['status_reason'] if record.get('status_reason') else ''}",
+        f"Status: {record['status']}{' (on radar, extended ' + str(record['radar_periods']) + 'x)' if record.get('radar_periods') else ''}"
+        f"{' — ' + record['status_reason'] if record.get('status_reason') else ''}",
         f"Conviction: {record['conviction']:.0f} ({label(record['conviction'], config)}) {_trend(record)}  peak {record['conviction_peak']:.0f}, started {record['first_rating']:.0f}",
         f"Rating now: {record['rating']:.0f}/100  = utility {b.get('utility', 0):.0f}/{w.utility} · socials {b.get('socials', 0):.0f}/{w.socials} · "
         f"safety {b.get('safety', 0):.0f}/{w.safety} · market {b.get('market', 0):.0f}/{w.market} · traction {b.get('traction', 0):.0f}/{w.traction}",
@@ -103,7 +109,7 @@ def format_token(record: dict[str, Any], config: ScoutConfig = DEFAULT_CONFIG, m
 
 def format_cycle(report: CycleReport, config: ScoutConfig = DEFAULT_CONFIG) -> str:
     lines = [
-        f"Scan: {report.discovered} Solana tokens in discovery feeds, {report.evaluated} new launches evaluated, "
+        f"Scan: {report.discovered} Solana tokens in discovery feeds, {report.evaluated} launches from the last 7 days evaluated, "
         f"{len(report.added)} added, {report.rejected} filtered · {report.updated} tracked tokens updated"
     ]
     if report.added:
@@ -116,9 +122,9 @@ def format_cycle(report: CycleReport, config: ScoutConfig = DEFAULT_CONFIG) -> s
         lines.append("\n📈 Post-launch activity:")
         for r, ev in report.events:
             lines.append(f"  ${r['symbol']}: {ev.message} ({ev.weight:+.0f}) → conviction {r['conviction']:.0f}")
-    for title, items in (("✅ Finished 7-day tracking", report.completed), ("⛔ Dropped", report.dropped)):
+    for title, items in (("🔭 Kept on radar", report.extended), ("✅ Finished watch period", report.completed), ("⛔ Dropped", report.dropped)):
         if items:
             lines.append(f"\n{title}:")
             for r in items:
-                lines.append(f"  ${r['symbol']}: {r['status_reason']}")
+                lines.append(f"  ${r['symbol']}: {r['status_reason'] or r['events'][-1][2]}")
     return "\n".join(lines)

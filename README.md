@@ -175,7 +175,12 @@ Like the sniper, it never trades.
 1. **Discover**: polls DexScreener's Solana discovery feeds (new token
    profiles, boosts, community takeovers). A token only appears there if
    a team paid for a profile or boost, which already filters out most
-   throwaway launches. Anything whose first pool is older than 48h is skipped.
+   throwaway launches. It also runs DexScreener name searches for
+   utility terms (AI agent, protocol, launchpad, DePIN, terminal, SDK,
+   payments, oracle…) to catch older launches that never paid for a
+   profile. Tokens launched in the **last 7 days** are
+   evaluated, so a project that was quiet at launch but is now building
+   traction still gets found.
 2. **Enrich**: pulls each candidate's
    - market data from DexScreener (price, MC, liquidity, volume, buys/sells, links),
    - safety from RugCheck (mint/freeze authority, LP lock %, top-10
@@ -214,10 +219,20 @@ Like the sniper, it never trades.
    - +2 for a higher-low price structure, -2 for lower highs.
 
    So conviction has to build up across several checks. 🟢 ≥75 HIGH,
-   🟡 ≥55 MEDIUM, 🔴 LOW. After 7 days a token is marked **completed**
-   with its final verdict. A token that falls 85% from its tracked high,
-   loses its pair, or trips a hard filter is **dropped**. Both stay in
-   the history.
+   🟡 ≥55 MEDIUM, 🔴 LOW.
+6. **Radar**: every 7 days of watching, each token gets a review. It
+   **stays on the radar** for another 7 days if all of these hold:
+   - its tech still reads as utility,
+   - conviction held or rose and is still at least 55,
+   - holders grew,
+   - liquidity held within 10% of where the period started.
+
+   The next period is then judged against the new baseline, so a token
+   has to keep improving to stay. Otherwise it's marked **completed**
+   with its final verdict and the checklist of which conditions failed.
+   A token that falls 85% from its tracked high, loses its pair, or
+   trips a hard filter is **dropped** at any point. Completed and
+   dropped tokens stay in the history.
 
 State is a JSON file (`SCOUT_STORE_PATH`, default `.sol_utility_scout.json`),
 so a cron job that starts a fresh process each time works fine.

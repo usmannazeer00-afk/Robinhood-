@@ -27,10 +27,17 @@ class RatingWeights:
 class ScoutConfig:
     chain_id: str = "solana"
 
-    # Discovery: only tokens whose first pool is younger than this are "new".
-    max_launch_age_hours: float = 48
-    # Track every accepted token for this long after its launch.
+    # Discovery: tokens launched within the last 7 days are evaluated, so a
+    # project that was quiet at launch but is building traction still gets found.
+    max_launch_age_hours: float = 168
+    # Watch every accepted token for this long after it was first picked up.
     tracking_days: float = 7
+    # When a watch period ends, a token whose tech still reads as utility and
+    # whose numbers improved over the period stays on the radar for another
+    # period instead of being closed out. Improving means: conviction held or
+    # rose and is at least conviction_medium, holders grew, and liquidity held
+    # within this tolerance of where the period started.
+    radar_liquidity_tolerance: float = 0.9
 
     # Hard filters (any of these -> rejected / dropped from the watchlist)
     liquidity_min_usd: float = 10_000

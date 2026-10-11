@@ -4,7 +4,9 @@ One ``run_cycle`` does two things:
 
 1. **update** every token on the watchlist -- re-observe it, detect what
    changed since the last look (events), re-rate it, move its conviction,
-   and finish it after 7 days or drop it if it trips a hard filter;
+   and drop it if it trips a hard filter. Every 7 days of watching it is
+   reviewed: kept on the radar for another 7 days if its tech still reads
+   as utility and its numbers improved, otherwise closed out as completed;
 2. **scan** DexScreener's discovery feeds for Solana tokens launched in
    the last ``max_launch_age_hours``, fully enrich and rate each new one,
    and add those rated >= ``watch_rating_min`` to the watchlist.
@@ -47,6 +49,7 @@ class CycleReport:
     events: list[tuple[dict[str, Any], Event]] = field(default_factory=list)
     dropped: list[dict[str, Any]] = field(default_factory=list)
     completed: list[dict[str, Any]] = field(default_factory=list)
+    extended: list[dict[str, Any]] = field(default_factory=list)
     updated: int = 0
 
 
@@ -152,6 +155,12 @@ class Tracker:
                 self.store.mark_rejected(addr, [f"launched {age_h:.0f}h ago, not new"])
                 report.rejected += 1
                 continue
+            # Cheap pre-check before the RugCheck/website calls: most search hits are empty pools.
+            liquidity = sum(float((p.get("liquidity") or {}).get("usd") or 0) for p in pairs[addr])
+            if liquidity < self.config.liquidity_min_usd:
+                self.store.mark_rejected(addr, [f"liquidity ${liquidity:,.0f} < ${self.config.liquidity_min_usd:,.0f} floor"])
+                report.rejected += 1
+                continue
             candidates.append(addr)
 
         def evaluate(addr: str) -> tuple[str, Snapshot, Rating]:
@@ -231,6 +240,8 @@ class Tracker:
             "conviction": rating.total,
             "conviction_peak": rating.total,
             "conviction_history": [[ts, rating.total, ["initial rating"]]],
+            "period_start": _period_start(ts, rating.total, snap),
+            "radar_periods": 0,
             "first_mcap": snap.market_cap,
             "peak_price": snap.price_usd,
             "peak_mcap": snap.market_cap,
@@ -292,10 +303,31 @@ class Tracker:
             if dd >= self.config.drawdown_kill_pct:
                 self._drop(record, f"price down {dd:.0f}% from tracked high", report)
                 return
-        if days >= self.config.tracking_days:
-            label = conv.label(record["conviction"], self.config)
+        start = record.setdefault("period_start", _period_start_from_series(record))
+        if (now - datetime.fromisoformat(start["at"])).total_seconds() >= self.config.tracking_days * 86_400:
+            self._review_period(record, snap, rating, report)
+
+    def _review_period(self, record: dict[str, Any], snap: Snapshot, rating: Rating, report: CycleReport) -> None:
+        """End of a 7-day watch period: keep improving utility projects on the radar, close out the rest."""
+        c, start = self.config, record["period_start"]
+        holders = snap.safety.holders or 0
+        checks = {
+            "tech still reads as utility": rating.category != "meme" and rating.utility >= c.utility_min_ratio * c.weights.utility,
+            f"conviction {start['conviction']:.0f} -> {record['conviction']:.0f}": record["conviction"] >= max(start["conviction"], c.conviction_medium),
+            f"holders {start['holders'] or 0:,} -> {holders:,}": holders > (start["holders"] or 0),
+            f"liquidity ${start['liquidity']:,.0f} -> ${snap.liquidity_usd:,.0f}": snap.liquidity_usd >= start["liquidity"] * c.radar_liquidity_tolerance,
+        }
+        summary = ", ".join(f"{'✓' if ok else '✗'} {name}" for name, ok in checks.items())
+        label = conv.label(record["conviction"], c)
+        if all(checks.values()):
+            record["radar_periods"] = record.get("radar_periods", 0) + 1
+            record["period_start"] = _period_start(snap.observed_at, record["conviction"], snap)
+            message = f"kept on radar for another {c.tracking_days:.0f} days (conviction {record['conviction']:.0f} {label}): {summary}"
+            record["events"].append([snap.observed_at, "radar_extended", message, 0])
+            report.extended.append(record)
+        else:
             record["status"] = COMPLETED
-            record["status_reason"] = f"7-day tracking finished, final conviction {record['conviction']:.0f} ({label})"
+            record["status_reason"] = f"watch period finished, final conviction {record['conviction']:.0f} ({label}): {summary}"
             record["events"].append([snap.observed_at, "completed", record["status_reason"], 0])
             report.completed.append(record)
 
@@ -332,6 +364,16 @@ def _days_since(iso: str | None, now: datetime) -> int:
     if not iso:
         return 0
     return int((now - datetime.fromisoformat(iso)).total_seconds() // 86_400)
+
+
+def _period_start(ts: str, conviction: float, snap: Snapshot) -> dict[str, Any]:
+    return {"at": ts, "conviction": conviction, "holders": snap.safety.holders, "liquidity": snap.liquidity_usd, "mcap": snap.market_cap}
+
+
+def _period_start_from_series(record: dict[str, Any]) -> dict[str, Any]:
+    """Backfills period_start for records stored before radar extensions existed."""
+    first = record["series"][0] if record.get("series") else [record["first_seen"], 0, record.get("first_mcap", 0), 0, None]
+    return {"at": record["first_seen"], "conviction": record["first_rating"], "holders": first[4], "liquidity": first[3] or 0, "mcap": first[2]}
 
 
 def _breakdown(r: Rating) -> dict[str, float]:

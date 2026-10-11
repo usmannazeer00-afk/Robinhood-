@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://api.dexscreener.com"
 DISCOVERY_FEEDS = ("token-profiles/latest/v1", "token-boosts/latest/v1", "token-boosts/top/v1", "community-takeovers/latest/v1")
+# Name/symbol search terms that pull in utility-sounding tokens the paid
+# feeds above never list -- mostly older launches (days, not hours) that
+# never bought a profile. Name matches are noisy; the rating does the filtering.
+SEARCH_TERMS = ("ai agent", "protocol", "launchpad", "defi", "depin", "bot", "terminal", "infra", "sdk", "payments", "oracle", "app")
 BATCH_SIZE = 30  # tokens/v1 accepts up to 30 comma-separated addresses
 
 
@@ -57,6 +61,19 @@ class DexScreenerClient:
                     entry["links"] = item["links"]
                 if feed.startswith("community-takeovers"):
                     entry["cto"] = True
+        for term in SEARCH_TERMS:
+            try:
+                payload = get_json(self.session, f"{self.api_base}/latest/dex/search", params={"q": term})
+            except (requests.RequestException, ValueError) as exc:
+                logger.warning("dexscreener search %r failed: %s", term, exc)
+                continue
+            for pair in (payload or {}).get("pairs") or []:
+                addr = (pair.get("baseToken") or {}).get("address")
+                if pair.get("chainId") != self.chain_id or not addr:
+                    continue
+                entry = found.setdefault(addr, {"tokenAddress": addr, "description": "", "links": [], "cto": False, "feeds": []})
+                if "search" not in entry["feeds"]:
+                    entry["feeds"].append("search")
         return found
 
     def pairs_for_tokens(self, addresses: list[str]) -> dict[str, list[dict[str, Any]]]:

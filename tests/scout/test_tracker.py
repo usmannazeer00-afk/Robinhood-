@@ -85,16 +85,46 @@ def test_red_flags_lower_conviction_and_hard_filter_drops(tmp_path):
     assert report.dropped
 
 
-def test_tracking_completes_after_seven_days(tmp_path):
+def _end_period(t, days: float = 7.01):
+    rec = t.store.get(ADDR)
+    rec["period_start"]["at"] = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def test_flat_token_is_closed_out_after_seven_days(tmp_path):
     t, *_ = _tracker(tmp_path)
     t.run_cycle()
-    _age_record(t, 7.01)
-    report = t.run_cycle()
+    _end_period(t)
+    report = t.run_cycle()  # holders unchanged -> not improving
     rec = t.store.get(ADDR)
     assert rec["status"] == COMPLETED and report.completed
-    assert "7-day" in rec["status_reason"]
-    # Completed tokens are no longer refreshed
-    assert t.run_cycle().updated == 0
+    assert "✗ holders" in rec["status_reason"]
+    assert t.run_cycle().updated == 0  # completed tokens are no longer refreshed
+
+
+def test_improving_utility_token_stays_on_radar_past_seven_days(tmp_path):
+    t, dex, rc, _ = _tracker(tmp_path)
+    t.run_cycle()
+    _end_period(t)
+    rc.reports[ADDR] = good_safety(900)
+    dex.pairs[ADDR] = [make_pair(ADDR, liq=70_000)]
+    report = t.run_cycle()
+    rec = t.store.get(ADDR)
+    assert rec["status"] == WATCHING and rec["radar_periods"] == 1 and report.extended
+    assert rec["events"][-1][1] == "radar_extended"
+    assert rec["period_start"]["holders"] == 900  # next period is judged against the new baseline
+
+    # Next period: liquidity bleeds out -> closed out
+    _end_period(t)
+    rc.reports[ADDR] = good_safety(1_000)
+    dex.pairs[ADDR] = [make_pair(ADDR, liq=40_000)]
+    t.run_cycle()
+    assert t.store.get(ADDR)["status"] == COMPLETED
+
+
+def test_tokens_launched_within_seven_days_are_evaluated(tmp_path):
+    t, dex, *_ = _tracker(tmp_path)
+    dex.pairs[ADDR] = [make_pair(ADDR, hours_old=24 * 5)]
+    assert [r["address"] for r in t.run_cycle().added] == [ADDR]
 
 
 def test_drawdown_from_high_kills_token(tmp_path):
