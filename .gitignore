@@ -6,3 +6,4 @@ venv/
 .pytest_cache/
 *.egg-info/
 .robinhood_sniper_history.json
+.sol_utility_scout.json

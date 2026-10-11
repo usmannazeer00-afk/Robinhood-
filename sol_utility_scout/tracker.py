@@ -1,0 +1,341 @@
+"""Orchestration: discover new launches, rate them, and track the keepers.
+
+One ``run_cycle`` does two things:
+
+1. **update** every token on the watchlist -- re-observe it, detect what
+   changed since the last look (events), re-rate it, move its conviction,
+   and finish it after 7 days or drop it if it trips a hard filter;
+2. **scan** DexScreener's discovery feeds for Solana tokens launched in
+   the last ``max_launch_age_hours``, fully enrich and rate each new one,
+   and add those rated >= ``watch_rating_min`` to the watchlist.
+
+Run it on a schedule (cron, ``python -m sol_utility_scout.cli loop``, or
+the Telegram bot's built-in job) -- state lives in the JSON store, so a
+fresh process each time works fine.
+"""
+
+from __future__ import annotations
+
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+from . import conviction as conv
+from .config import DEFAULT_CONFIG, ScoutConfig
+from .events import Event, detect
+from .models import Rating, Snapshot
+from .rating import rate
+from .sources.dexscreener import DexScreenerClient, launch_time, main_pair, parse_socials
+from .sources.rugcheck import RugCheckClient
+from .sources.web import WebProbe
+from .store import COMPLETED, DROPPED, WATCHING, Store, now_iso
+
+logger = logging.getLogger(__name__)
+
+REJECT_RECHECK_HOURS = 3  # pump.fun tokens show $0 liquidity until they graduate
+ENRICH_WORKERS = 6
+
+
+@dataclass
+class CycleReport:
+    discovered: int = 0
+    evaluated: int = 0
+    rejected: int = 0
+    added: list[dict[str, Any]] = field(default_factory=list)
+    events: list[tuple[dict[str, Any], Event]] = field(default_factory=list)
+    dropped: list[dict[str, Any]] = field(default_factory=list)
+    completed: list[dict[str, Any]] = field(default_factory=list)
+    updated: int = 0
+
+
+class Tracker:
+    def __init__(
+        self,
+        store: Store | None = None,
+        config: ScoutConfig = DEFAULT_CONFIG,
+        dex: DexScreenerClient | None = None,
+        rugcheck: RugCheckClient | None = None,
+        web: WebProbe | None = None,
+    ) -> None:
+        self.store = store or Store()
+        self.config = config
+        self.dex = dex or DexScreenerClient(chain_id=config.chain_id)
+        self.rugcheck = rugcheck or RugCheckClient()
+        self.web = web or WebProbe()
+
+    # ------------------------------------------------------------------ build
+    def observe(self, address: str, profile: dict[str, Any], pairs: list[dict[str, Any]]) -> tuple[Snapshot, str]:
+        """Builds a fully enriched Snapshot (market + safety + web) for one token."""
+        pair = main_pair(pairs) or {}
+        launched = launch_time(pairs)
+        base = pair.get("baseToken") or {}
+        info = pair.get("info") or {}
+        # Prefer the pair's live links (so removals are visible); fall back to profile links.
+        if info.get("websites") or info.get("socials"):
+            socials = parse_socials([], pair)
+        else:
+            socials = parse_socials(profile.get("links") or [], None)
+
+        txns = (pair.get("txns") or {}).get("h24") or {}
+        volume = pair.get("volume") or {}
+        snap = Snapshot(
+            token_address=address,
+            observed_at=now_iso(),
+            name=base.get("name") or profile.get("name") or "",
+            symbol=base.get("symbol") or profile.get("symbol") or "",
+            description=profile.get("description") or "",
+            pair_address=pair.get("pairAddress"),
+            dex_id=pair.get("dexId"),
+            launched_at=launched.isoformat(timespec="seconds") if launched else None,
+            price_usd=float(pair.get("priceUsd") or 0),
+            market_cap=float(pair.get("marketCap") or pair.get("fdv") or 0),
+            liquidity_usd=sum(float((p.get("liquidity") or {}).get("usd") or 0) for p in pairs),
+            volume_h24=sum(float((p.get("volume") or {}).get("h24") or 0) for p in pairs),
+            volume_h1=float(volume.get("h1") or 0),
+            buys_h24=int(txns.get("buys") or 0),
+            sells_h24=int(txns.get("sells") or 0),
+            price_change_h24=float((pair.get("priceChange") or {}).get("h24") or 0),
+            boosts_active=int((pair.get("boosts") or {}).get("active") or 0),
+            cto=bool(profile.get("cto")),
+            socials=socials,
+        )
+
+        snap.safety = self.rugcheck.report(address)
+        website_text = ""
+        if socials.website:
+            snap.website, website_text = self.web.website(socials.website)
+        if socials.telegram:
+            snap.telegram_members = self.web.telegram_members(socials.telegram)
+        return snap, website_text
+
+    # ------------------------------------------------------------------ cycle
+    def run_cycle(self) -> CycleReport:
+        report = CycleReport()
+        self.update(report)
+        self.scan(report)
+        self.store.prune_rejected(older_than_hours=self.config.max_launch_age_hours * 2)
+        self.store.save()
+        return report
+
+    def scan(self, report: CycleReport | None = None) -> CycleReport:
+        report = report or CycleReport()
+        found = self.dex.discover()
+        report.discovered = len(found)
+
+        # Refresh stored profiles of tokens we already track (new description,
+        # links, CTO -- picked up as events on their next update).
+        for addr, profile in found.items():
+            record = self.store.get(addr)
+            if record:
+                record["profile"] = _merge_profile(record.get("profile") or {}, profile)
+
+        fresh = [
+            a for a in found
+            if not self.store.get(a) and not self.store.recently_rejected(a, REJECT_RECHECK_HOURS)
+        ]
+        if not fresh:
+            return report
+        pairs = self.dex.pairs_for_tokens(fresh)
+        now = datetime.now(timezone.utc)
+
+        candidates = []
+        for addr in fresh:
+            launched = launch_time(pairs[addr])
+            if not pairs[addr] or launched is None:
+                self.store.mark_rejected(addr, ["no trading pair yet"])
+                report.rejected += 1
+                continue
+            age_h = (now - launched).total_seconds() / 3600
+            if age_h > self.config.max_launch_age_hours:
+                self.store.mark_rejected(addr, [f"launched {age_h:.0f}h ago, not new"])
+                report.rejected += 1
+                continue
+            candidates.append(addr)
+
+        def evaluate(addr: str) -> tuple[str, Snapshot, Rating]:
+            snap, text = self.observe(addr, found[addr], pairs[addr])
+            return addr, snap, rate(snap, self.config, text)
+
+        with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as pool:
+            results = list(pool.map(_safe(evaluate), candidates))
+
+        for result in results:
+            if result is None:
+                continue
+            addr, snap, rating = result
+            report.evaluated += 1
+            if rating.rejected:
+                self.store.mark_rejected(addr, rating.reject_reasons)
+                report.rejected += 1
+            elif rating.category == "meme" or rating.utility < self.config.utility_min_ratio * self.config.weights.utility:
+                self.store.mark_rejected(addr, [f"not a utility project ({rating.category}, utility {rating.utility:.0f}/{self.config.weights.utility})"])
+                report.rejected += 1
+            elif rating.total < self.config.watch_rating_min:
+                self.store.mark_rejected(addr, [f"rating {rating.total:.0f} < {self.config.watch_rating_min:.0f}"])
+                report.rejected += 1
+            else:
+                record = self._new_record(snap, rating, found[addr])
+                self.store.tokens[addr] = record
+                report.added.append(record)
+        return report
+
+    def update(self, report: CycleReport | None = None) -> CycleReport:
+        report = report or CycleReport()
+        watching = self.store.by_status(WATCHING)
+        if not watching:
+            return report
+        pairs = self.dex.pairs_for_tokens([r["address"] for r in watching])
+
+        def refresh(record: dict[str, Any]) -> tuple[dict[str, Any], Snapshot, Rating] | None:
+            p = pairs.get(record["address"]) or []
+            if not p:
+                return None
+            snap, text = self.observe(record["address"], record.get("profile") or {}, p)
+            return record, snap, rate(snap, self.config, text)
+
+        with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as pool:
+            results = list(pool.map(_safe(refresh), watching))
+
+        now = datetime.now(timezone.utc)
+        for record, result in zip(watching, results):
+            if result is None:
+                record["misses"] = record.get("misses", 0) + 1
+                if record["misses"] >= 3:
+                    self._drop(record, "no trading pair found for 3 checks (delisted / pool pulled?)", report)
+                continue
+            record["misses"] = 0
+            _, snap, rating = result
+            self._apply_update(record, snap, rating, now, report)
+            report.updated += 1
+        return report
+
+    # ------------------------------------------------------------------ records
+    def _new_record(self, snap: Snapshot, rating: Rating, profile: dict[str, Any]) -> dict[str, Any]:
+        ts = snap.observed_at
+        record = {
+            "address": snap.token_address,
+            "symbol": snap.symbol,
+            "name": snap.name,
+            "category": rating.category,
+            "launched_at": snap.launched_at,
+            "first_seen": ts,
+            "last_checked": ts,
+            "status": WATCHING,
+            "status_reason": "",
+            "first_rating": rating.total,
+            "rating": rating.total,
+            "breakdown": _breakdown(rating),
+            "notes": rating.notes,
+            "conviction": rating.total,
+            "conviction_peak": rating.total,
+            "conviction_history": [[ts, rating.total, ["initial rating"]]],
+            "first_mcap": snap.market_cap,
+            "peak_price": snap.price_usd,
+            "peak_mcap": snap.market_cap,
+            "days_credited": _days_since(snap.launched_at, datetime.now(timezone.utc)),
+            "profile": {k: profile.get(k) for k in ("description", "links", "cto", "feeds")},
+            "last_snapshot": snap.to_dict(),
+            "series": [],
+            "events": [[ts, "added", f"added to watchlist at rating {rating.total:.0f} ({rating.category})", 0]],
+        }
+        self.store.append_series(record, _series_point(snap, rating.total, rating.total))
+        return record
+
+    def _apply_update(self, record: dict[str, Any], snap: Snapshot, rating: Rating, now: datetime, report: CycleReport) -> None:
+        prev = Snapshot.from_dict(record["last_snapshot"])
+        events = detect(prev, snap, first_mcap=record["first_mcap"], peak_price=record["peak_price"])
+        for ev in events:
+            record["events"].append(ev.to_list(snap.observed_at))
+            report.events.append((record, ev))
+
+        days = _days_since(record.get("launched_at") or snap.launched_at, now)
+        new_days = max(0, days - record.get("days_credited", 0))
+        prices = [pt[1] for pt in record["series"]] + [snap.price_usd]
+        delta, reasons = conv.step(
+            rating_prev=record["rating"],
+            rating_now=rating.total if not rating.rejected else record["rating"],
+            event_weights=[e.weight for e in events],
+            holders_prev=prev.safety.holders,
+            holders_now=snap.safety.holders,
+            days_survived_new=new_days,
+            prices=prices,
+            config=self.config,
+        )
+        record["days_credited"] = days
+        record["conviction"] = round(max(0.0, min(100.0, record["conviction"] + delta)), 1)
+        record["conviction_peak"] = max(record["conviction_peak"], record["conviction"])
+        if reasons:
+            record["conviction_history"].append([snap.observed_at, record["conviction"], reasons])
+
+        record.update(
+            symbol=snap.symbol or record["symbol"],
+            name=snap.name or record["name"],
+            last_checked=snap.observed_at,
+            rating=rating.total,
+            breakdown=_breakdown(rating),
+            notes=rating.notes,
+            category=rating.category if rating.category != "unknown" else record["category"],
+            last_snapshot=snap.to_dict(),
+            peak_price=max(record["peak_price"], snap.price_usd),
+            peak_mcap=max(record["peak_mcap"], snap.market_cap),
+        )
+        self.store.append_series(record, _series_point(snap, rating.total, record["conviction"]))
+
+        if rating.rejected:
+            self._drop(record, "; ".join(rating.reject_reasons), report)
+            return
+        if record["peak_price"] > 0 and snap.price_usd > 0:
+            dd = (1 - snap.price_usd / record["peak_price"]) * 100
+            if dd >= self.config.drawdown_kill_pct:
+                self._drop(record, f"price down {dd:.0f}% from tracked high", report)
+                return
+        if days >= self.config.tracking_days:
+            label = conv.label(record["conviction"], self.config)
+            record["status"] = COMPLETED
+            record["status_reason"] = f"7-day tracking finished, final conviction {record['conviction']:.0f} ({label})"
+            record["events"].append([snap.observed_at, "completed", record["status_reason"], 0])
+            report.completed.append(record)
+
+    def _drop(self, record: dict[str, Any], reason: str, report: CycleReport) -> None:
+        record["status"] = DROPPED
+        record["status_reason"] = reason
+        record["events"].append([now_iso(), "dropped", reason, 0])
+        report.dropped.append(record)
+
+
+def _safe(fn):
+    """Wraps a worker so one token's unexpected error can't sink the whole cycle."""
+    def wrapper(arg):
+        try:
+            return fn(arg)
+        except Exception:  # noqa: BLE001 -- logged, the token is just retried next cycle
+            logger.exception("enrichment failed")
+            return None
+    return wrapper
+
+
+def _merge_profile(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(old)
+    if new.get("description"):
+        merged["description"] = new["description"]
+    if new.get("links"):
+        merged["links"] = new["links"]
+    merged["cto"] = bool(old.get("cto") or new.get("cto"))
+    merged["feeds"] = sorted(set(old.get("feeds") or []) | set(new.get("feeds") or []))
+    return merged
+
+
+def _days_since(iso: str | None, now: datetime) -> int:
+    if not iso:
+        return 0
+    return int((now - datetime.fromisoformat(iso)).total_seconds() // 86_400)
+
+
+def _breakdown(r: Rating) -> dict[str, float]:
+    return {"utility": r.utility, "socials": r.socials, "safety": r.safety, "market": r.market, "traction": r.traction}
+
+
+def _series_point(snap: Snapshot, rating: float, conviction: float) -> list[Any]:
+    return [snap.observed_at, snap.price_usd, snap.market_cap, snap.liquidity_usd, snap.safety.holders, snap.volume_h24, rating, conviction]

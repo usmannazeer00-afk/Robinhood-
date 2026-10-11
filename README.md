@@ -158,3 +158,96 @@ guarantee. Keep position sizes small, decide your invalidation level
 before entering, and treat slippage settings as an execution parameter,
 not a safety net. This tool is for informational/research purposes only
 and is not financial advice.
+
+---
+
+# Solana Utility Scout (`sol_utility_scout/`)
+
+A second bot in this repo: it finds **newly launched Solana tokens that
+look like real utility projects** (not pure memes) with real socials,
+rates them, then **tracks each one for 7 days after launch**. Every check
+logs anything that happened since the last one, and moves a **conviction
+score** that rises as the project proves itself and falls on red flags.
+Like the sniper, it never trades.
+
+## How it works
+
+1. **Discover**: polls DexScreener's Solana discovery feeds (new token
+   profiles, boosts, community takeovers). A token only appears there if
+   a team paid for a profile or boost, which already filters out most
+   throwaway launches. Anything whose first pool is older than 48h is skipped.
+2. **Enrich**: pulls each candidate's
+   - market data from DexScreener (price, MC, liquidity, volume, buys/sells, links),
+   - safety from RugCheck (mint/freeze authority, LP lock %, top-10
+     holders excluding AMM pool and locker accounts, holder count,
+     insider wallets, risk list),
+   - liveness from the web: fetches the project website (real content?
+     links to docs, GitHub or an app?) and reads Telegram member counts
+     from the public t.me page.
+3. **Rate** (0-100 points):
+
+   | Factor | Pts | Earned by |
+   |---|---:|---|
+   | Utility | 25 | a concrete use case (AI, DeFi, Infra, DePIN, Tools, Payments, RWA, Gaming, Social) plus evidence the product exists (docs, whitepaper, roadmap, audit, GitHub, app). Meme markers subtract points |
+   | Socials | 20 | a website that loads with real content, an X account (a link to a single tweet doesn't count), Telegram (scaled by member count), Discord, GitHub, docs |
+   | Safety | 25 | mint and freeze revoked, LP locked/burned, holders spread out, no RugCheck dangers, few insiders |
+   | Market | 15 | liquidity depth, a sensible MC/liquidity ratio |
+   | Traction | 15 | holder count, 24h volume, buy pressure |
+
+   **Hard filters** (rejected, or dropped if already tracked): rugged,
+   active mint or freeze authority, liquidity under $10K, top-10 holders
+   over 45%, more than 2 RugCheck "danger" risks. A token joins the
+   watchlist only if it rates **≥55**, isn't classified as a meme, and
+   scores at least 40% on Utility.
+4. **Track for 7 days**: every cycle re-observes each watched token and
+   logs **post-launch events**: socials or website added or removed,
+   website down or back up, description updated, liquidity ±40-50%,
+   holder milestones, Telegram growth, MC 2x/3x/5x/10x since first seen,
+   new highs, drawdowns, DexScreener boosts, community takeovers, new or
+   cleared RugCheck risks, and authority re-enabled or rugged.
+5. **Conviction** starts at the first rating and moves each check by a
+   step capped at ±8. The step is built from:
+   - the change in rating,
+   - the weights of the events since the last check,
+   - holder growth,
+   - +2 for each full day the token survives,
+   - +2 for a higher-low price structure, -2 for lower highs.
+
+   So conviction has to build up across several checks. 🟢 ≥75 HIGH,
+   🟡 ≥55 MEDIUM, 🔴 LOW. After 7 days a token is marked **completed**
+   with its final verdict. A token that falls 85% from its tracked high,
+   loses its pair, or trips a hard filter is **dropped**. Both stay in
+   the history.
+
+State is a JSON file (`SCOUT_STORE_PATH`, default `.sol_utility_scout.json`),
+so a cron job that starts a fresh process each time works fine.
+
+## Usage
+
+```bash
+pip install -r requirements.txt
+
+# CLI
+python -m sol_utility_scout scan                 # one cycle: update watchlist + discover new launches
+python -m sol_utility_scout loop --every 10      # cycle every 10 min forever
+python -m sol_utility_scout watchlist [--all]    # ranked by conviction (--all adds completed/dropped)
+python -m sol_utility_scout token <CA|SYMBOL>    # full card + post-launch activity log
+python -m sol_utility_scout check <CA>           # rate any Solana token right now (not added)
+
+# Telegram bot (runs a cycle every SCOUT_INTERVAL_MIN minutes, pushes alerts)
+export TELEGRAM_BOT_TOKEN=xxxxx
+python -m sol_utility_scout.bot
+```
+
+Bot commands: `/scan`, `/watchlist`, `/all`, `/token <CA|SYMBOL>`,
+`/check <CA>`, `/subscribe` (push new picks, events and 7-day verdicts
+to this chat), `/unsubscribe`.
+
+All thresholds and weights live in `sol_utility_scout/config.py`.
+
+**Limits:** X follower counts need a paid API, so X only counts as
+present or absent. The utility classifier works on keywords, so a team
+can dress a meme up with the right words. That's why the bot also
+checks for product evidence and a live website, and keeps watching for
+7 days before it trusts anything. Tests: `pytest tests/scout`. This
+tool is not financial advice.
