@@ -135,7 +135,12 @@ def parse_socials(links: list[dict[str, Any]], pair: dict[str, Any] | None = Non
         elif kind == "discord" or "discord." in lowered:
             socials.discord = socials.discord or url
         elif "github.com/" in lowered:
-            socials.github = socials.github or url
+            from .web import is_project_github  # local import: web imports utility, keep module load cheap
+
+            if is_project_github(lowered):
+                socials.github = socials.github or url
+            else:
+                socials.other.append(url)
         elif any(k in label for k in ("doc", "whitepaper", "litepaper", "gitbook")) or "gitbook" in lowered or "/docs" in lowered or lowered.startswith("https://docs."):
             socials.docs = socials.docs or url
         elif kind in ("website", "") or "website" in label:

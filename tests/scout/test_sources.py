@@ -69,3 +69,16 @@ def test_api_and_bot_links_detected():
     assert probe.has_api_link and probe.has_bot_link
     plain, _ = parse_website('<a href="https://t.me/community">tg</a><a href="/apiary.png">x</a>', 200)
     assert not plain.has_api_link and not plain.has_bot_link
+
+
+def test_borrowed_github_and_docs_links_are_not_project_proof():
+    body = ('<a href="https://github.com/pump-fun/pump-public-docs/blob/main/docs/x.md">gh</a>'
+            '<a href="https://deepmind.google/research/publications/77240/">paper</a>'
+            '<a href="https://other.example/docs/intro">docs</a>')
+    probe, _ = parse_website(body, 200, "https://phasepunk.xyz/")
+    assert not probe.has_github_link and not probe.has_docs_link
+    own = ('<a href="https://github.com/phasepunk/engine">gh</a><a href="/docs">docs</a>'
+           '<a href="https://docs.phasepunk.xyz">d</a><a href="https://phasepunk.gitbook.io">gb</a>')
+    probe, _ = parse_website(own, 200, "https://phasepunk.xyz/")
+    assert probe.has_github_link and probe.has_docs_link
+    assert parse_socials([{"url": "https://github.com/pump-fun/pump-public-docs"}]).github is None
